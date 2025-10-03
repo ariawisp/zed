@@ -143,6 +143,8 @@ pub struct TerminalView {
     ime_state: Option<ImeState>,
     _subscriptions: Vec<Subscription>,
     _terminal_subscriptions: Vec<Subscription>,
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    native_subview: Option<*mut std::ffi::c_void>,
 }
 
 #[derive(Default, Clone)]
@@ -268,6 +270,8 @@ impl TerminalView {
                 cx.observe_global::<SettingsStore>(Self::settings_changed),
             ],
             _terminal_subscriptions: terminal_subscriptions,
+            #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+            native_subview: None,
         }
     }
 
@@ -1057,6 +1061,25 @@ impl Render for TerminalView {
         let terminal_view_handle = cx.entity();
 
         let focused = self.focus_handle.is_focused(window);
+
+        // If using Ghostty backend on macOS, create/update a native NSView subview to host the renderer.
+        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+        {
+            let bounds = self.terminal_bounds(cx);
+            let frame = gpui::Bounds::new(bounds.origin, bounds.size);
+            match self.native_subview {
+                None => {
+                    let ptr = window.create_native_subview(frame);
+                    if !ptr.is_null() {
+                        self.native_subview = Some(ptr);
+                        // Attaching the Ghostty renderer to this subview occurs in terminal crate/backend path.
+                    }
+                }
+                Some(ptr) => {
+                    window.set_native_subview_frame(ptr, frame);
+                }
+            }
+        }
 
         div()
             .id("terminal-view")

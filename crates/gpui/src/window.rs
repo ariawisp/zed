@@ -1269,6 +1269,55 @@ impl Window {
     }
 }
 
+// macOS-only helpers to host native NSView subviews for custom renderers.
+#[cfg(target_os = "macos")]
+impl Window {
+    pub fn create_native_subview(&self, frame: Bounds<Pixels>) -> *mut std::ffi::c_void {
+        use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
+        use raw_window_handle as rwh;
+        unsafe {
+            let handle = self.window_handle().unwrap();
+            match handle.as_raw() {
+                rwh::RawWindowHandle::AppKit(h) => {
+                    let parent: id = h.ns_view as id;
+                    let alloc: id = msg_send![class!(NSView), alloc];
+                    let rect = NSRect::new(
+                        NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
+                        NSSize::new(frame.size.width.0.into(), frame.size.height.0.into()),
+                    );
+                    let view: id = msg_send![alloc, initWithFrame: rect];
+                    let _: () = msg_send![view, setWantsLayer: YES];
+                    let _: () = msg_send![parent, addSubview: view];
+                    view as *mut _
+                }
+                _ => std::ptr::null_mut(),
+            }
+        }
+    }
+
+    pub fn set_native_subview_frame(&self, subview: *mut std::ffi::c_void, frame: Bounds<Pixels>) {
+        use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
+        unsafe {
+            if subview.is_null() { return; }
+            let view: id = subview as id;
+            let rect = NSRect::new(
+                NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
+                NSSize::new(frame.size.width.0.into(), frame.size.height.0.into()),
+            );
+            let _: () = msg_send![view, setFrame: rect];
+        }
+    }
+
+    pub fn remove_native_subview(&self, subview: *mut std::ffi::c_void) {
+        use cocoa::{appkit::NSView, base::id};
+        unsafe {
+            if subview.is_null() { return; }
+            let view: id = subview as id;
+            let _: () = msg_send![view, removeFromSuperview];
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DispatchEventResult {
     pub propagate: bool,
