@@ -11,6 +11,7 @@ test-support = [
     "gpui/test-support",
     "settings/test-support",
 ]
+ghostty-backend = ["dep:libghostty"]
 
 [lints]
 workspace = true
@@ -41,6 +42,7 @@ regex.workspace = true
 urlencoding.workspace = true
 workspace-hack.workspace = true
 itertools.workspace = true
+libghostty = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
