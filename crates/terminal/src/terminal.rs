@@ -2,6 +2,16 @@ pub mod mappings;
 
 pub use alacritty_terminal;
 
+#[cfg(feature = "ghostty-backend")]
+use crate::ghostty_backend::GhosttyBackend;
+#[cfg(feature = "ghostty-backend")]
+use std::ffi::c_void;
+#[cfg(feature = "ghostty-backend")]
+use std::io::Read as _;
+
+#[cfg(feature = "ghostty-backend")]
+pub mod ghostty_backend;
+
 mod pty_info;
 mod terminal_hyperlinks;
 pub mod terminal_settings;
@@ -66,9 +76,21 @@ use thiserror::Error;
 
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, EventEmitter, Hsla, Keystroke, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, KeyUpEvent,
     ScrollWheelEvent, SharedString, Size, Task, TouchPhase, Window, actions, black, px,
 };
+
+#[cfg(feature = "ghostty-backend")]
+#[inline]
+fn ghostty_mods_bits(mods: Modifiers) -> i32 {
+    let mut bits: i32 = 0;
+    // ghostty_input_mods_e: SHIFT=1<<0, CTRL=1<<1, ALT=1<<2, SUPER=1<<3
+    if mods.shift { bits |= 1 << 0; }
+    if mods.control { bits |= 1 << 1; }
+    if mods.alt { bits |= 1 << 2; }
+    if mods.platform { bits |= 1 << 3; }
+    bits
+}
 
 use crate::mappings::{colors::to_alac_rgb, keys::to_esc_str};
 
@@ -513,9 +535,11 @@ impl TerminalBuilder {
             }
         };
 
+        #[cfg(not(feature = "ghostty-backend"))]
         let pty_info = PtyProcessInfo::new(&pty);
 
         //And connect them together
+        #[cfg(not(feature = "ghostty-backend"))]
         let event_loop = EventLoop::new(
             term.clone(),
             ZedListener(events_tx),
@@ -526,16 +550,21 @@ impl TerminalBuilder {
         .context("failed to create event loop")?;
 
         //Kick things off
+        #[cfg(not(feature = "ghostty-backend"))]
         let pty_tx = event_loop.channel();
+        #[cfg(not(feature = "ghostty-backend"))]
         let _io_thread = event_loop.spawn(); // DANGER
 
         let no_task = task.is_none();
 
         let mut terminal = Terminal {
             task,
+            #[cfg(not(feature = "ghostty-backend"))]
             pty_tx: Notifier(pty_tx),
             completion_tx,
+            #[cfg(not(feature = "ghostty-backend"))]
             term,
+            #[cfg(not(feature = "ghostty-backend"))]
             term_config: config,
             title_override: terminal_title_override,
             events: VecDeque::with_capacity(10), //Should never get this high.
@@ -566,6 +595,8 @@ impl TerminalBuilder {
                 window_id,
             },
             child_exited: None,
+            #[cfg(feature = "ghostty-backend")]
+            ghostty: None,
         };
 
         if cfg!(not(target_os = "windows")) && !activation_script.is_empty() && no_task {
@@ -647,6 +678,56 @@ impl TerminalBuilder {
         .detach();
 
         self.terminal
+    }
+
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    pub fn attach_renderer(&mut self, nsview: *mut c_void, content_scale: f64, cx: &mut Context<Self>) {
+        if self.ghostty.is_some() { return; }
+        // Estimate cols/rows from last_content or default
+        let bounds = self.last_content.terminal_bounds;
+        let (cols, rows) = if bounds.cell_size.width.0 > 0.0 && bounds.cell_size.height.0 > 0.0 {
+            let cols = (bounds.size.width.0 / bounds.cell_size.width.0).max(1.0) as u16;
+            let rows = (bounds.size.height.0 / bounds.cell_size.height.0).max(1.0) as u16;
+            (cols, rows)
+        } else { (80, 24) };
+        let mut backend = GhosttyBackend::new(rows, cols).expect("ghostty backend init failed");
+        // Build argv and cwd from template
+        let argv: Vec<String> = match &self.template.shell {
+            Shell::System => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
+            Shell::Program(p) => vec![p.clone()],
+            Shell::WithArguments { program, args, .. } => {
+                let mut v = vec![program.clone()]; v.extend(args.clone()); v
+            }
+        };
+        let argv_c: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+        let cwd = self.working_directory();
+        backend.spawn_shell(&argv_c, cwd.as_deref()).expect("ghostty spawn shell failed");
+        backend.attach_renderer(nsview, content_scale).expect("ghostty attach renderer failed");
+        let fd = backend.pty_fd();
+        // Spawn background IO loop to feed VT and refresh
+        cx.background_spawn(async move |terminal, _cx| {
+            // Duplicate fd so closing File doesn't close the original
+            let fd2 = unsafe { libc::dup(fd) };
+            if fd2 < 0 { return anyhow::Ok(()); }
+            let mut file = unsafe { std::fs::File::from_raw_fd(fd2) };
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        terminal.update(|t, _| {
+                            if let Some(b) = t.ghostty.as_mut() {
+                                b.feed(&buf[..n]);
+                                b.refresh();
+                            }
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+            anyhow::Ok(())
+        }).detach();
+        self.ghostty = Some(backend);
     }
 
     #[cfg(windows)]
@@ -734,9 +815,12 @@ pub enum SelectionPhase {
 }
 
 pub struct Terminal {
+    #[cfg(not(feature = "ghostty-backend"))]
     pty_tx: Notifier,
     completion_tx: Option<Sender<Option<ExitStatus>>>,
+    #[cfg(not(feature = "ghostty-backend"))]
     term: Arc<FairMutex<Term<ZedListener>>>,
+    #[cfg(not(feature = "ghostty-backend"))]
     term_config: Config,
     events: VecDeque<InternalEvent>,
     /// This is only used for mouse mode cell change detection
@@ -761,6 +845,8 @@ pub struct Terminal {
     template: CopyTemplate,
     activation_script: Vec<String>,
     child_exited: Option<ExitStatus>,
+    #[cfg(feature = "ghostty-backend")]
+    ghostty: Option<GhosttyBackend>,
 }
 
 struct CopyTemplate {
@@ -988,6 +1074,21 @@ impl Terminal {
                 trace!("Setting selection: selection={selection:?}");
                 term.selection = selection.as_ref().map(|(sel, _)| sel.clone());
 
+                #[cfg(feature = "ghostty-backend")]
+                {
+                    if let Some(b) = self.ghostty.as_mut() {
+                        if let Some((sel, _)) = selection {
+                            let tl = sel.start();
+                            let br = sel.end();
+                            b.renderer_set_selection(false, tl.line.0 as u16, tl.column.0 as u16, br.line.0 as u16, br.column.0 as u16);
+                        } else {
+                            b.renderer_clear_selection();
+                        }
+                    }
+                    // Don't draw overlay selection when Ghostty owns it
+                    self.last_content.selection = None;
+                }
+
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 if let Some(selection_text) = term.selection_to_string() {
                     cx.write_to_primary(ClipboardItem::new_string(selection_text));
@@ -1010,6 +1111,18 @@ impl Terminal {
                     selection.update(point, side);
                     term.selection = Some(selection);
 
+                    #[cfg(feature = "ghostty-backend")]
+                    {
+                        if let Some(b) = self.ghostty.as_mut() {
+                            if let Some(sel) = &term.selection {
+                                let tl = sel.start();
+                                let br = sel.end();
+                                b.renderer_set_selection(false, tl.line.0 as u16, tl.column.0 as u16, br.line.0 as u16, br.column.0 as u16);
+                            }
+                        }
+                        self.last_content.selection = None;
+                    }
+
                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                     if let Some(selection_text) = term.selection_to_string() {
                         cx.write_to_primary(ClipboardItem::new_string(selection_text));
@@ -1022,13 +1135,32 @@ impl Terminal {
 
             InternalEvent::Copy(keep_selection) => {
                 trace!("Copying selection: keep_selection={keep_selection:?}");
-                if let Some(txt) = term.selection_to_string() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(txt));
-                    if !keep_selection.unwrap_or_else(|| {
-                        let settings = TerminalSettings::get_global(cx);
-                        settings.keep_selection_on_copy
-                    }) {
-                        self.events.push_back(InternalEvent::SetSelection(None));
+                #[cfg(feature = "ghostty-backend")]
+                if let Some(b) = self.ghostty.as_ref() {
+                    if let Some(sel) = &self.last_content.selection {
+                        let row0 = sel.start.line.0 as u16;
+                        let col0 = sel.start.column.0 as u16;
+                        let row1 = sel.end.line.0 as u16;
+                        let col1 = sel.end.column.0 as u16;
+                        if let Some(txt) = b.read_selection_text_grid(row0, col0, row1, col1) {
+                            cx.write_to_clipboard(ClipboardItem::new_string(txt));
+                            if !keep_selection.unwrap_or_else(|| {
+                                let settings = TerminalSettings::get_global(cx);
+                                settings.keep_selection_on_copy
+                            }) {
+                                self.last_content.selection = None;
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(txt) = term.selection_to_string() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(txt));
+                        if !keep_selection.unwrap_or_else(|| {
+                            let settings = TerminalSettings::get_global(cx);
+                            settings.keep_selection_on_copy
+                        }) {
+                            self.events.push_back(InternalEvent::SetSelection(None));
+                        }
                     }
                 }
             }
@@ -1285,12 +1417,25 @@ impl Terminal {
     pub fn set_size(&mut self, new_bounds: TerminalBounds) {
         if self.last_content.terminal_bounds != new_bounds {
             self.events.push_back(InternalEvent::Resize(new_bounds))
+            ;
+            #[cfg(feature = "ghostty-backend")]
+            self.ghostty_resize_if_needed(new_bounds);
         }
     }
 
     ///Write the Input payload to the tty.
     fn write_to_pty(&self, input: impl Into<Cow<'static, [u8]>>) {
-        self.pty_tx.notify(input.into());
+        #[cfg(feature = "ghostty-backend")]
+        if let Some(b) = self.ghostty.as_ref() {
+            let data: Cow<'static, [u8]> = input.into();
+            let _ = b.write(&data);
+            return;
+        }
+
+        #[cfg(not(feature = "ghostty-backend"))]
+        {
+            self.pty_tx.notify(input.into());
+        }
     }
 
     pub fn input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
@@ -1399,6 +1544,12 @@ impl Terminal {
             return true;
         }
 
+        #[cfg(feature = "ghostty-backend")]
+        if let Some(bytes) = self.encode_keystroke_via_ghostty(keystroke, alt_is_meta) {
+            self.input(bytes);
+            return true;
+        }
+
         // Keep default terminal behavior
         let esc = to_esc_str(keystroke, &self.last_content.mode, alt_is_meta);
         if let Some(esc) = esc {
@@ -1411,6 +1562,114 @@ impl Terminal {
             false
         }
     }
+
+    #[cfg(feature = "ghostty-backend")]
+    pub fn key_up(&mut self, keystroke: &Keystroke, alt_is_meta: bool) {
+        if let Some(bytes) = self.encode_keystroke_action_via_ghostty(keystroke, alt_is_meta, libghostty_sys::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) {
+            self.input(bytes);
+        }
+    }
+
+    #[cfg(feature = "ghostty-backend")]
+    fn encode_keystroke_via_ghostty(&self, ks: &Keystroke, alt_is_meta: bool) -> Option<Vec<u8>> {
+        self.encode_keystroke_action_via_ghostty(ks, alt_is_meta, libghostty_sys::ghostty_input_action_e::GHOSTTY_ACTION_PRESS)
+    }
+
+    #[cfg(feature = "ghostty-backend")]
+    fn encode_keystroke_action_via_ghostty(&self, ks: &Keystroke, alt_is_meta: bool, action: libghostty_sys::ghostty_input_action_e) -> Option<Vec<u8>> {
+        use libghostty_sys as sys;
+        let b = self.ghostty.as_ref()?;
+        // Prefer the actual typed character when available; fall back to key if single-char
+        let mut text_opt: Option<std::ffi::CString> = None;
+        if let Some(kc) = &ks.key_char {
+            if !kc.is_empty() { text_opt = std::ffi::CString::new(kc.as_str()).ok(); }
+        }
+        if text_opt.is_none() && ks.key.chars().count() == 1 {
+            text_opt = std::ffi::CString::new(ks.key.as_str()).ok();
+        }
+        let text_c = match &text_opt { Some(s) => s.as_c_str(), None => std::ffi::CStr::from_bytes_with_nul(b"\0").unwrap() };
+        let mut mods_bits = ghostty_mods_bits(ks.modifiers) as u32;
+        // Option-as-Meta: map Alt to Super (platform) if requested
+        if alt_is_meta && ks.modifiers.alt && !ks.modifiers.platform {
+            // Clear ALT (1<<2) and set SUPER (1<<3)
+            mods_bits &= !(1 << 2);
+            mods_bits |= 1 << 3;
+        }
+        let mods_enum: sys::ghostty_input_mods_e = unsafe { std::mem::transmute(mods_bits) };
+        let native_keycode = mac_native_keycode_for_name(ks.key.as_str());
+        let mut ev = sys::ghostty_input_key_s {
+            action,
+            mods: mods_enum,
+            consumed_mods: unsafe { std::mem::transmute(0u32) },
+            keycode: native_keycode,
+            text: text_c.as_ptr(),
+            unshifted_codepoint: 0,
+            composing: false,
+        };
+        let bytes = b.encode_key_event(unsafe { &*(&ev as *const _) });
+        if bytes.is_empty() { None } else { Some(bytes) }
+    }
+
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    #[inline]
+    fn mac_vk(code: u32) -> u32 { code }
+
+    #[cfg(all(feature = "ghostty-backend", not(target_os = "macos")))]
+    #[inline]
+    fn mac_vk(_code: u32) -> u32 { 0 }
+
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    fn mac_native_keycode_for_name(name: &str) -> u32 {
+        // Map common non-printable keys to macOS virtual keycodes expected by Ghostty's encoder.
+        // Reference: Carbon Virtual Keycodes (kVK_*).
+        match name.to_ascii_lowercase().as_str() {
+            // Navigation
+            "left" => Self::mac_vk(0x7B),
+            "right" => Self::mac_vk(0x7C),
+            "down" => Self::mac_vk(0x7D),
+            "up" => Self::mac_vk(0x7E),
+            "home" => Self::mac_vk(0x73),
+            "end" => Self::mac_vk(0x77),
+            "pageup" => Self::mac_vk(0x74),
+            "pagedown" => Self::mac_vk(0x79),
+            "insert" => Self::mac_vk(0x72), // Help/Insert fallback
+            // Editing
+            "backspace" => Self::mac_vk(0x33),
+            "delete" => Self::mac_vk(0x75), // Forward delete
+            // Whitespace/control
+            "tab" => Self::mac_vk(0x30),
+            "escape" => Self::mac_vk(0x35),
+            "enter" => Self::mac_vk(0x4C), // keypad enter
+            "return" => Self::mac_vk(0x24),
+            // Function keys
+            "f1" => Self::mac_vk(0x7A),
+            "f2" => Self::mac_vk(0x78),
+            "f3" => Self::mac_vk(0x63),
+            "f4" => Self::mac_vk(0x76),
+            "f5" => Self::mac_vk(0x60),
+            "f6" => Self::mac_vk(0x61),
+            "f7" => Self::mac_vk(0x62),
+            "f8" => Self::mac_vk(0x64),
+            "f9" => Self::mac_vk(0x65),
+            "f10" => Self::mac_vk(0x6D),
+            "f11" => Self::mac_vk(0x67),
+            "f12" => Self::mac_vk(0x6F),
+            "f13" => Self::mac_vk(0x69),
+            "f14" => Self::mac_vk(0x6B),
+            "f15" => Self::mac_vk(0x71),
+            "f16" => Self::mac_vk(0x6A),
+            "f17" => Self::mac_vk(0x40),
+            "f18" => Self::mac_vk(0x4F),
+            "f19" => Self::mac_vk(0x50),
+            "f20" => Self::mac_vk(0x5A),
+            // Numpad special
+            "numpadenter" => Self::mac_vk(0x4C),
+            _ => 0,
+        }
+    }
+
+    #[cfg(all(feature = "ghostty-backend", not(target_os = "macos")))]
+    fn mac_native_keycode_for_name(_name: &str) -> u32 { 0 }
 
     pub fn try_modifiers_change(
         &mut self,
@@ -1548,15 +1807,25 @@ impl Terminal {
         }
     }
 
-    pub fn focus_in(&self) {
+    pub fn focus_in(&mut self) {
         if self.last_content.mode.contains(TermMode::FOCUS_IN_OUT) {
             self.write_to_pty("\x1b[I".as_bytes());
+        }
+        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+        if let Some(b) = self.ghostty.as_mut() {
+            b.set_renderer_focus(true);
+            b.set_renderer_visible(true);
         }
     }
 
     pub fn focus_out(&mut self) {
         if self.last_content.mode.contains(TermMode::FOCUS_IN_OUT) {
             self.write_to_pty("\x1b[O".as_bytes());
+        }
+        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+        if let Some(b) = self.ghostty.as_mut() {
+            b.set_renderer_focus(false);
+            b.set_renderer_visible(false);
         }
     }
 
@@ -1590,11 +1859,17 @@ impl Terminal {
                 self.last_content.display_offset,
             );
 
-            if self.mouse_changed(point, side)
-                && let Some(bytes) =
-                    mouse_moved_report(point, e.pressed_button, e.modifiers, self.last_content.mode)
-            {
-                self.pty_tx.notify(bytes);
+            if self.mouse_changed(point, side) {
+                #[cfg(feature = "ghostty-backend")]
+                if let Some(b) = self.ghostty.as_ref() {
+                    let mods = ghostty_mods_bits(e.modifiers);
+                    let bytes = b.encode_mouse_move(point.line.0 as u16, point.column.0 as u16, mods);
+                    let _ = b.write(&bytes);
+                }
+                #[cfg(not(feature = "ghostty-backend"))]
+                if let Some(bytes) = mouse_moved_report(point, e.pressed_button, e.modifiers, self.last_content.mode) {
+                    self.pty_tx.notify(bytes);
+                }
             }
         } else if e.modifiers.secondary() {
             self.word_from_position(e.position);
@@ -1621,10 +1896,34 @@ impl Terminal {
             if should_search {
                 self.last_mouse_move_time = now;
                 self.last_hyperlink_search_position = Some(position);
-                self.events.push_back(InternalEvent::FindHyperlink(
-                    position - self.last_content.terminal_bounds.bounds.origin,
-                    false,
-                ));
+                #[cfg(feature = "ghostty-backend")]
+                if let Some(b) = self.ghostty.as_ref() {
+                    // Compute grid point within viewport
+                    let (point, _) = grid_point_and_side(
+                        position - self.last_content.terminal_bounds.bounds.origin,
+                        self.last_content.terminal_bounds,
+                        self.last_content.display_offset,
+                    );
+                    let row = point.line.0 as u16;
+                    let col = point.column.0 as u16;
+                    if let Some(url) = b.link_uri_grid(row, col) {
+                        if let Some((c0, c1)) = b.link_span_grid_row(row, col) {
+                            self.last_content.last_hovered_word = Some(HoveredWord {
+                                word: url,
+                                word_match: (AlacPoint::new(point.line, Column(c0 as usize)))
+                                    ..=(AlacPoint::new(point.line, Column(c1 as usize))),
+                                id: self.next_link_id(),
+                            });
+                        }
+                    } else {
+                        self.last_content.last_hovered_word = None;
+                    }
+                } else {
+                    self.events.push_back(InternalEvent::FindHyperlink(
+                        position - self.last_content.terminal_bounds.bounds.origin,
+                        false,
+                    ));
+                }
             }
         } else {
             self.last_content.last_hovered_word = None;
@@ -1698,9 +1997,16 @@ impl Terminal {
         );
 
         if self.mouse_mode(e.modifiers.shift) {
-            if let Some(bytes) =
-                mouse_button_report(point, e.button, e.modifiers, true, self.last_content.mode)
-            {
+            #[cfg(feature = "ghostty-backend")]
+            if let Some(b) = self.ghostty.as_ref() {
+                let (row, col) = (point.line.0 as u16, point.column.0 as u16);
+                let button = match e.button { MouseButton::Left => 0, MouseButton::Middle => 1, MouseButton::Right => 2, _ => 0 };
+                let mods = ghostty_mods_bits(e.modifiers);
+                let bytes = b.encode_mouse_button(button, true, row, col, mods);
+                let _ = b.write(&bytes);
+            }
+            #[cfg(not(feature = "ghostty-backend"))]
+            if let Some(bytes) = mouse_button_report(point, e.button, e.modifiers, true, self.last_content.mode) {
                 self.pty_tx.notify(bytes);
             }
         } else {
@@ -1757,9 +2063,16 @@ impl Terminal {
                 self.last_content.display_offset,
             );
 
-            if let Some(bytes) =
-                mouse_button_report(point, e.button, e.modifiers, false, self.last_content.mode)
-            {
+            #[cfg(feature = "ghostty-backend")]
+            if let Some(b) = self.ghostty.as_ref() {
+                let (row, col) = (point.line.0 as u16, point.column.0 as u16);
+                let button = match e.button { MouseButton::Left => 0, MouseButton::Middle => 1, MouseButton::Right => 2, _ => 0 };
+                let mods = ghostty_mods_bits(e.modifiers);
+                let bytes = b.encode_mouse_button(button, false, row, col, mods);
+                let _ = b.write(&bytes);
+            }
+            #[cfg(not(feature = "ghostty-backend"))]
+            if let Some(bytes) = mouse_button_report(point, e.button, e.modifiers, false, self.last_content.mode) {
                 self.pty_tx.notify(bytes);
             }
         } else {
@@ -1767,15 +2080,27 @@ impl Terminal {
                 self.copy(Some(true));
             }
 
-            //Hyperlinks
+            // Hyperlinks
             if self.selection_phase == SelectionPhase::Ended {
-                let mouse_cell_index =
-                    content_index_for_mouse(position, &self.last_content.terminal_bounds);
-                if let Some(link) = self.last_content.cells[mouse_cell_index].hyperlink() {
-                    cx.open_url(link.uri());
-                } else if e.modifiers.secondary() {
-                    self.events
-                        .push_back(InternalEvent::FindHyperlink(position, true));
+                #[cfg(feature = "ghostty-backend")]
+                if let Some(b) = self.ghostty.as_ref() {
+                    let point = grid_point(
+                        position,
+                        self.last_content.terminal_bounds,
+                        self.last_content.display_offset,
+                    );
+                    if let Some(url) = b.link_uri_grid(point.line.0 as u16, point.column.0 as u16) {
+                        cx.open_url(&url);
+                    }
+                } else {
+                    let mouse_cell_index =
+                        content_index_for_mouse(position, &self.last_content.terminal_bounds);
+                    if let Some(link) = self.last_content.cells[mouse_cell_index].hyperlink() {
+                        cx.open_url(link.uri());
+                    } else if e.modifiers.secondary() {
+                        self.events
+                            .push_back(InternalEvent::FindHyperlink(position, true));
+                    }
                 }
             }
         }
@@ -1795,13 +2120,22 @@ impl Terminal {
                     self.last_content.terminal_bounds,
                     self.last_content.display_offset,
                 );
-
-                if let Some(scrolls) = scroll_report(point, scroll_lines, e, self.last_content.mode)
-                {
-                    for scroll in scrolls {
-                        self.pty_tx.notify(scroll);
+                #[cfg(feature = "ghostty-backend")]
+                if let Some(b) = self.ghostty.as_ref() {
+                    // Emit one scroll event per line, using dy sign.
+                    let mods = ghostty_mods_bits(e.modifiers);
+                    let (row, col) = (point.line.0 as u16, point.column.0 as u16);
+                    let steps = scroll_lines.abs();
+                    let dy = if scroll_lines > 0 { -1.0 } else { 1.0 }; // match traditional terminal scroll direction
+                    for _ in 0..steps {
+                        let bytes = b.encode_scroll(0.0, dy, row, col, mods);
+                        let _ = b.write(&bytes);
                     }
-                };
+                }
+                #[cfg(not(feature = "ghostty-backend"))]
+                if let Some(scrolls) = scroll_report(point, scroll_lines, e, self.last_content.mode) {
+                    for scroll in scrolls { self.pty_tx.notify(scroll); }
+                }
             } else if self
                 .last_content
                 .mode
@@ -1814,6 +2148,15 @@ impl Terminal {
 
                 self.events.push_back(InternalEvent::Scroll(scroll));
             }
+        }
+    }
+
+    #[cfg(feature = "ghostty-backend")]
+    fn ghostty_resize_if_needed(&self, new_bounds: TerminalBounds) {
+        if let Some(b) = self.ghostty.as_ref() {
+            let cols = (new_bounds.width() / new_bounds.cell_width) as u16;
+            let rows = (new_bounds.height() / new_bounds.line_height) as u16;
+            let _ = b.resize(rows.max(1), cols.max(1));
         }
     }
 

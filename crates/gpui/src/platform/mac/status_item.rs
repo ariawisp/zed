@@ -157,11 +157,24 @@ impl StatusItem {
 
             {
                 let state = state.borrow();
-                let layer = state.renderer.layer();
                 let scale_factor = state.scale_factor();
                 let size = state.content_size() * scale_factor;
-                layer.set_contents_scale(scale_factor.into());
-                layer.set_drawable_size(metal::CGSize::new(size.x().into(), size.y().into()));
+                #[cfg(feature = "macos-metal4")]
+                {
+                    use objc2_core_foundation::CGSize;
+                    use objc2_quartz_core::CAMetalLayer;
+                    let layer_ptr = state.renderer.layer();
+                    let layer_ref: &CAMetalLayer = unsafe { &*(layer_ptr as *mut CAMetalLayer) };
+                    layer_ref.setContentsScale(scale_factor as f64);
+                    let cg = CGSize { width: size.x() as f64, height: size.y() as f64 };
+                    layer_ref.setDrawableSize(cg);
+                }
+                #[cfg(not(feature = "macos-metal4"))]
+                {
+                    let layer = state.renderer.layer();
+                    layer.set_contents_scale(scale_factor.into());
+                    layer.set_drawable_size(metal::CGSize::new(size.x().into(), size.y().into()));
+                }
             }
 
             Self(state)

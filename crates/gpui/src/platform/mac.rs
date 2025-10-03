@@ -11,11 +11,15 @@ mod screen_capture;
 
 #[cfg(not(feature = "macos-blade"))]
 mod metal_atlas;
-#[cfg(not(feature = "macos-blade"))]
+#[cfg(all(not(feature = "macos-blade"), feature = "macos-metal4"))]
+pub mod metal4_renderer;
+#[cfg(all(not(feature = "macos-blade"), not(feature = "macos-metal4")))]
 pub mod metal_renderer;
 
 use core_video::image_buffer::CVImageBuffer;
-#[cfg(not(feature = "macos-blade"))]
+#[cfg(all(not(feature = "macos-blade"), feature = "macos-metal4"))]
+use metal4_renderer as renderer;
+#[cfg(all(not(feature = "macos-blade"), not(feature = "macos-metal4")))]
 use metal_renderer as renderer;
 
 #[cfg(feature = "macos-blade")]

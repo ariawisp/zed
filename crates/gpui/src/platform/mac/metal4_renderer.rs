@@ -1,0 +1,1210 @@
+use crate::{
+    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
+    Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
+    Surface, Underline,
+};
+use objc::{class, msg_send, sel, sel_impl};
+use objc::runtime::{Object, BOOL, YES, NO};
+use std::{ffi::c_void, mem, ptr, sync::Arc};
+use parking_lot::Mutex;
+
+// objc2 types for Metal 4 (from patched git deps)
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{
+    MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice,
+    MTLClearColor, MTLLoadAction, MTLPixelFormat, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
+    MTLStoreAction,
+};
+use objc2_quartz_core::CAMetalLayer;
+use objc2_core_foundation::CGSize;
+use objc2_foundation::NSString;
+use core_foundation::base::{kCFAllocatorDefault, CFAllocatorRef, CFRelease};
+use core_foundation::dictionary::CFDictionaryRef;
+use core_video::image_buffer::CVImageBuffer;
+use core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+
+#[link(name = "CoreVideo", kind = "framework")]
+extern "C" {
+    fn CVMetalTextureCacheCreate(
+        allocator: CFAllocatorRef,
+        cache_attributes: CFDictionaryRef,
+        metal_device: *mut ::std::ffi::c_void,
+        texture_attributes: CFDictionaryRef,
+        cache_out: *mut *mut ::std::ffi::c_void,
+    ) -> i32;
+    fn CVMetalTextureCacheCreateTextureFromImage(
+        allocator: CFAllocatorRef,
+        texture_cache: *mut ::std::ffi::c_void,
+        source_image: core_video::image_buffer::CVImageBufferRef,
+        texture_attributes: CFDictionaryRef,
+        pixel_format: u64,
+        width: usize,
+        height: usize,
+        plane_index: usize,
+        texture_out: *mut *mut ::std::ffi::c_void,
+    ) -> i32;
+    fn CVMetalTextureGetTexture(texture: *mut ::std::ffi::c_void) -> *mut ::std::ffi::c_void;
+}
+
+#[allow(dead_code)]
+pub(crate) type Context = Arc<Mutex<InstanceBufferPool>>;
+pub(crate) type Renderer = Metal4Renderer;
+
+#[derive(Default)]
+pub(crate) struct InstanceBufferPool {
+    buffer_size: usize,
+    free: Vec<*mut Object>, // id<MTLBuffer>
+}
+
+impl InstanceBufferPool {
+    fn new() -> Self {
+        Self { buffer_size: 2 * 1024 * 1024, free: Vec::new() }
+    }
+    fn acquire(&mut self, device: &Retained<ProtocolObject<dyn MTLDevice>>) -> InstanceBuffer {
+        let buf = if let Some(b) = self.free.pop() {
+            b
+        } else {
+            unsafe {
+                let dev_ptr = Retained::as_ptr(device) as *mut Object;
+                let b: *mut Object = msg_send![dev_ptr, newBufferWithLength: self.buffer_size options: 0u64];
+                b
+            }
+        };
+        InstanceBuffer { metal_buffer: buf, size: self.buffer_size }
+    }
+    fn release(&mut self, buffer: InstanceBuffer) {
+        if buffer.size == self.buffer_size {
+            self.free.push(buffer.metal_buffer);
+        }
+    }
+}
+
+struct InstanceBuffer {
+    metal_buffer: *mut Object,
+    size: usize,
+}
+
+#[repr(C)]
+struct PathRasterizationVertex {
+    xy_position: Point<ScaledPixels>,
+    st_position: Point<f32>,
+    color: Background,
+    bounds: Bounds<ScaledPixels>,
+}
+
+#[repr(C)]
+struct PathSprite {
+    bounds: Bounds<ScaledPixels>,
+}
+
+#[repr(C)]
+struct SurfaceBounds {
+    bounds: Bounds<ScaledPixels>,
+    content_mask: ContentMask<ScaledPixels>,
+}
+
+pub(crate) struct Metal4Renderer {
+    device: Retained<ProtocolObject<dyn MTLDevice>>, // id<MTLDevice>
+    layer: *mut Object,                               // CAMetalLayer*
+    // Use MTL4 allocators to reduce command buffer creation overhead
+    command_allocators: Vec<*mut Object>,
+    frame_index: usize,
+    #[allow(dead_code)]
+    presents_with_transaction: bool,
+    atlas: Arc<Metal4Atlas>,
+    // Pipelines
+    quads_pso: *mut Object,
+    mono_sprites_pso: *mut Object,
+    // Static geometry buffer
+    unit_vertices: *mut Object,
+    // Global argument table (samplers, globals)
+    argument_table: *mut Object,
+    // Small shared buffers for argument table
+    viewport_size_buffer: *mut Object,
+    atlas_size_buffer: *mut Object,
+    // Intermediate for path rasterization
+    path_intermediate_texture: *mut Object,
+    path_intermediate_msaa_texture: *mut Object,
+    path_sample_count: u32,
+    // Additional PSOs
+    path_raster_pso: *mut Object,
+    path_sprites_pso: *mut Object,
+    underlines_pso: *mut Object,
+    surfaces_pso: *mut Object,
+    // CoreVideo texture cache
+    cv_texture_cache: *mut ::std::ffi::c_void,
+    // MTL4 queue + sync
+    command_queue: *mut Object,
+    shared_event: *mut Object,
+    frame_number: u64,
+    residency_set: *mut Object,
+}
+
+impl Metal4Renderer {
+    #[cfg(feature = "runtime_shaders")]
+    const SHADERS_SOURCE_FILE: &'static str = include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
+
+    #[allow(unused)]
+    fn build_shader_library(device: &Retained<ProtocolObject<dyn MTLDevice>>) -> *mut Object {
+        // Prefer stitched shaders when available; otherwise stitch at runtime
+        #[cfg(feature = "runtime_shaders")]
+        {
+            unsafe {
+                let src = Self::SHADERS_SOURCE_FILE;
+                let ns = NSString::from_str(src);
+                // Use typed newLibraryWithSource_options_error
+                let lib = device
+                    .newLibraryWithSource_options_error(&ns, None)
+                    .expect("failed to build MSL 4.0 library");
+                Retained::as_ptr(&lib) as *mut Object
+            }
+        }
+        #[cfg(not(feature = "runtime_shaders"))]
+        {
+            // Stitch header at runtime and compile from source (works on dev boxes without metallib linkage into objc2 path)
+            let header = include_str!(concat!(env!("OUT_DIR"), "/scene.h"));
+            let shader_src = include_str!("shaders.metal");
+            let combined = {
+                let mut s = String::with_capacity(header.len() + shader_src.len() + 1);
+                s.push_str(header);
+                s.push('\n');
+                s.push_str(shader_src);
+                s
+            };
+            unsafe {
+                let ns = NSString::from_str(&combined);
+                let lib = device
+                    .newLibraryWithSource_options_error(&ns, None)
+                    .expect("failed to build MSL 4.0 library");
+                Retained::as_ptr(&lib) as *mut Object
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn bind_argument_table(&self, encoder: *mut Object) {
+        let stages_mask: u64 = 1u64 | 2u64; // Vertex | Fragment
+        let _: () = msg_send![encoder, setArgumentTable: self.argument_table atStages: stages_mask];
+    }
+
+    fn build_render_pso(
+        device: &Retained<ProtocolObject<dyn MTLDevice>>,
+        library: *mut Object,
+        label: &str,
+        vertex_name: &str,
+        fragment_name: &str,
+        pixel_format: MTLPixelFormat,
+    ) -> *mut Object {
+        unsafe {
+            let dev_ptr = Retained::as_ptr(device) as *mut Object;
+            // Create function descriptors
+            let vfd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
+            let ffd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
+            let vname = NSString::from_str(vertex_name);
+            let fname = NSString::from_str(fragment_name);
+            let _: () = msg_send![vfd, setName: vname];
+            let _: () = msg_send![ffd, setName: fname];
+            let _: () = msg_send![vfd, setLibrary: library];
+            let _: () = msg_send![ffd, setLibrary: library];
+
+            // Build pipeline descriptor
+            let rpdesc: *mut Object = msg_send![class!(MTL4RenderPipelineDescriptor), new];
+            let lbl = NSString::from_str(label);
+            let _: () = msg_send![rpdesc, setLabel: lbl];
+            let _: () = msg_send![rpdesc, setVertexFunctionDescriptor: vfd];
+            let _: () = msg_send![rpdesc, setFragmentFunctionDescriptor: ffd];
+
+            // Color attachment 0 format + blending like existing pipeline
+            let color_atts: *mut Object = msg_send![rpdesc, colorAttachments];
+            let color0: *mut Object = msg_send![color_atts, objectAtIndexedSubscript: 0usize];
+            let _: () = msg_send![color0, setPixelFormat: pixel_format];
+            let _: () = msg_send![color0, setBlendingEnabled: YES];
+            let _: () = msg_send![color0, setRgbBlendOperation: 0u64]; // MTLBlendOperationAdd
+            let _: () = msg_send![color0, setAlphaBlendOperation: 0u64];
+            // Source: SrcAlpha, Dest: OneMinusSrcAlpha (numeric constants)
+            let _: () = msg_send![color0, setSourceRGBBlendFactor: 7u64];
+            let _: () = msg_send![color0, setSourceAlphaBlendFactor: 1u64];
+            let _: () = msg_send![color0, setDestinationRGBBlendFactor: 9u64];
+            let _: () = msg_send![color0, setDestinationAlphaBlendFactor: 1u64];
+
+            // Build compiler and create pipeline state
+            let comp_desc: *mut Object = msg_send![class!(MTL4CompilerDescriptor), new];
+            let mut cerr: *mut Object = core::ptr::null_mut();
+            let compiler: *mut Object = msg_send![dev_ptr, newCompilerWithDescriptor: comp_desc error: &mut cerr];
+            let mut perr: *mut Object = core::ptr::null_mut();
+            let pso: *mut Object = msg_send![compiler, newRenderPipelineStateWithDescriptor: rpdesc error: &mut perr];
+            pso
+        }
+    }
+
+    fn build_render_pso_with_samples(
+        device: &Retained<ProtocolObject<dyn MTLDevice>>,
+        library: *mut Object,
+        label: &str,
+        vertex_name: &str,
+        fragment_name: &str,
+        pixel_format: MTLPixelFormat,
+        sample_count: u32,
+    ) -> *mut Object {
+        unsafe {
+            let dev_ptr = Retained::as_ptr(device) as *mut Object;
+            let vfd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
+            let ffd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
+            let vname = NSString::from_str(vertex_name);
+            let fname = NSString::from_str(fragment_name);
+            let _: () = msg_send![vfd, setName: vname];
+            let _: () = msg_send![ffd, setName: fname];
+            let _: () = msg_send![vfd, setLibrary: library];
+            let _: () = msg_send![ffd, setLibrary: library];
+
+            let rpdesc: *mut Object = msg_send![class!(MTL4RenderPipelineDescriptor), new];
+            let lbl = NSString::from_str(label);
+            let _: () = msg_send![rpdesc, setLabel: lbl];
+            let _: () = msg_send![rpdesc, setVertexFunctionDescriptor: vfd];
+            let _: () = msg_send![rpdesc, setFragmentFunctionDescriptor: ffd];
+            let _: () = msg_send![rpdesc, setRasterSampleCount: sample_count as usize];
+
+            let color_atts: *mut Object = msg_send![rpdesc, colorAttachments];
+            let color0: *mut Object = msg_send![color_atts, objectAtIndexedSubscript: 0usize];
+            let _: () = msg_send![color0, setPixelFormat: pixel_format];
+            let _: () = msg_send![color0, setBlendingEnabled: YES];
+            let _: () = msg_send![color0, setRgbBlendOperation: 0u64];
+            let _: () = msg_send![color0, setAlphaBlendOperation: 0u64];
+            let _: () = msg_send![color0, setSourceRGBBlendFactor: 7u64];
+            let _: () = msg_send![color0, setSourceAlphaBlendFactor: 1u64];
+            let _: () = msg_send![color0, setDestinationRGBBlendFactor: 9u64];
+            let _: () = msg_send![color0, setDestinationAlphaBlendFactor: 1u64];
+
+            let comp_desc: *mut Object = msg_send![class!(MTL4CompilerDescriptor), new];
+            let mut cerr: *mut Object = core::ptr::null_mut();
+            let compiler: *mut Object = msg_send![dev_ptr, newCompilerWithDescriptor: comp_desc error: &mut cerr];
+            let mut perr: *mut Object = core::ptr::null_mut();
+            let pso: *mut Object = msg_send![compiler, newRenderPipelineStateWithDescriptor: rpdesc error: &mut perr];
+            pso
+        }
+    }
+
+    fn create_unit_vertices_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>) -> *mut Object {
+        // Same values as legacy renderer
+        #[derive(Copy, Clone)]
+        #[repr(C)]
+        struct PointF { x: f32, y: f32 }
+        fn to_float2_bits(p: PointF) -> u64 {
+            let mut out = p.y.to_bits() as u64;
+            out <<= 32;
+            out |= p.x.to_bits() as u64;
+            out
+        }
+        let unit_vertices = [
+            to_float2_bits(PointF { x: 0.0, y: 0.0 }),
+            to_float2_bits(PointF { x: 1.0, y: 0.0 }),
+            to_float2_bits(PointF { x: 0.0, y: 1.0 }),
+            to_float2_bits(PointF { x: 0.0, y: 1.0 }),
+            to_float2_bits(PointF { x: 1.0, y: 0.0 }),
+            to_float2_bits(PointF { x: 1.0, y: 1.0 }),
+        ];
+        unsafe {
+            let bytes = unit_vertices.as_ptr() as *const c_void;
+            let len = core::mem::size_of_val(&unit_vertices);
+            let buf = device.newBufferWithBytes_length_options(bytes, len, 0);
+            Retained::as_ptr(&buf) as *mut Object
+        }
+    }
+
+    fn create_small_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>, size: usize) -> *mut Object {
+        unsafe {
+            let buf = device.newBufferWithLength_options(size, 0);
+            Retained::as_ptr(&buf) as *mut Object
+        }
+    }
+
+    fn new(_context: Context) -> Self {
+        let device = MTLCreateSystemDefaultDevice()
+            .expect("Metal is not supported on this device");
+
+        // CAMetalLayer* layer = [CAMetalLayer new];
+        let layer: *mut Object = unsafe { msg_send![class!(CAMetalLayer), new] };
+
+        // Configure defaults similar to existing renderer using typed CAMetalLayer methods
+        let layer_ref: &CAMetalLayer = unsafe { &*(layer as *mut CAMetalLayer) };
+        layer_ref.setAllowsNextDrawableTimeout(false);
+        layer_ref.setOpaque(false);
+        layer_ref.setMaximumDrawableCount(3);
+        layer_ref.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        // Attach device
+        unsafe { layer_ref.setDevice(Some(&device)); }
+
+        let atlas = Arc::new(Metal4Atlas::new(device.clone()));
+        // Create a small ring of MTL4CommandAllocator (3 in-flight by default)
+        let mut command_allocators = Vec::new();
+        let dev_ptr = Retained::as_ptr(&device) as *mut Object;
+        for _ in 0..3 {
+            let alloc: *mut Object = unsafe { msg_send![dev_ptr, newCommandAllocator] };
+            command_allocators.push(alloc);
+        }
+
+        // Build library from header + shader source
+        let library = Self::build_shader_library(&device);
+
+        // Create PSOs for quads and monochrome sprites using MTL4Compiler
+        let quads_pso = Self::build_render_pso(
+            &device,
+            library,
+            "quads",
+            "quad_vertex",
+            "quad_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+        let mono_sprites_pso = Self::build_render_pso(
+            &device,
+            library,
+            "monochrome_sprites",
+            "monochrome_sprite_vertex",
+            "monochrome_sprite_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+
+        // Additional pipelines: paths rasterization, path sprites, underlines
+        let path_sample_count = 4u32;
+        let path_raster_pso = Self::build_render_pso_with_samples(
+            &device,
+            library,
+            "paths_rasterization",
+            "path_rasterization_vertex",
+            "path_rasterization_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+            path_sample_count,
+        );
+        let path_sprites_pso = Self::build_render_pso(
+            &device,
+            library,
+            "path_sprites",
+            "path_sprite_vertex",
+            "path_sprite_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+        let underlines_pso = Self::build_render_pso(
+            &device,
+            library,
+            "underlines",
+            "underline_vertex",
+            "underline_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+        let surfaces_pso = Self::build_render_pso(
+            &device,
+            library,
+            "surfaces",
+            "surface_vertex",
+            "surface_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+
+        // Static unit triangle vertices buffer
+        let unit_vertices = Self::create_unit_vertices_buffer(&device);
+
+        // Build a minimal global argument table
+        let argument_table = Self::build_argument_table(&device, 8, 8, 2);
+        // Create small shared buffers used via argument table
+        let viewport_size_buffer = Self::create_small_buffer(&device, core::mem::size_of::<Size<DevicePixels>>());
+        let atlas_size_buffer = Self::create_small_buffer(&device, core::mem::size_of::<Size<DevicePixels>>());
+
+        // Create CoreVideo texture cache
+        let cv_texture_cache = unsafe {
+            let mut out: *mut ::std::ffi::c_void = core::ptr::null_mut();
+            let dev_ptr = Retained::as_ptr(&device) as *mut ::std::ffi::c_void;
+            let _res = CVMetalTextureCacheCreate(
+                kCFAllocatorDefault as _,
+                core::ptr::null(),
+                dev_ptr,
+                core::ptr::null(),
+                &mut out,
+            );
+            out
+        };
+
+        // Create MTL4 command queue and shared event
+        let command_queue: *mut Object = unsafe { msg_send![dev_ptr, newMTL4CommandQueue] };
+        let shared_event: *mut Object = unsafe { msg_send![dev_ptr, newSharedEvent] };
+        let frame_number: u64 = 0;
+        unsafe { let _: () = msg_send![shared_event, setSignaledValue: frame_number]; }
+
+        // Create a residency set and attach
+        let rs_desc: *mut Object = unsafe { msg_send![class!(MTLResidencySetDescriptor), new] };
+        let mut rerr: *mut Object = core::ptr::null_mut();
+        let residency_set: *mut Object = unsafe { msg_send![dev_ptr, newResidencySetWithDescriptor: rs_desc error: &mut rerr] };
+        // Add sets to queue: our residency set and the layer's
+        unsafe {
+            let layer_residency: *mut Object = msg_send![layer, residencySet];
+            let _: () = msg_send![command_queue, addResidencySet: residency_set];
+            if !layer_residency.is_null() {
+                let _: () = msg_send![command_queue, addResidencySet: layer_residency];
+            }
+            // Add frequently used allocations
+            let _: () = msg_send![residency_set, addAllocation: unit_vertices];
+            let _: () = msg_send![residency_set, addAllocation: viewport_size_buffer];
+            let _: () = msg_send![residency_set, addAllocation: atlas_size_buffer];
+            let _: () = msg_send![residency_set, commit];
+        }
+
+        Self {
+            device,
+            layer,
+            command_allocators,
+            frame_index: 0,
+            presents_with_transaction: false,
+            atlas,
+            quads_pso,
+            mono_sprites_pso,
+            unit_vertices,
+            argument_table,
+            viewport_size_buffer,
+            atlas_size_buffer,
+            path_intermediate_texture: core::ptr::null_mut(),
+            path_intermediate_msaa_texture: core::ptr::null_mut(),
+            path_sample_count,
+            path_raster_pso,
+            path_sprites_pso,
+            underlines_pso,
+            surfaces_pso,
+            cv_texture_cache,
+            command_queue,
+            shared_event,
+            frame_number,
+            residency_set,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn layer(&self) -> *mut Object {
+        self.layer
+    }
+
+    fn build_argument_table(
+        device: &Retained<ProtocolObject<dyn MTLDevice>>,
+        max_buffers: usize,
+        max_textures: usize,
+        max_samplers: usize,
+    ) -> *mut Object {
+        unsafe {
+            let desc: *mut Object = msg_send![class!(MTL4ArgumentTableDescriptor), new];
+            let _: () = msg_send![desc, setMaxBufferBindCount: max_buffers as u64];
+            let _: () = msg_send![desc, setMaxTextureBindCount: max_textures as u64];
+            let _: () = msg_send![desc, setMaxSamplerStateBindCount: max_samplers as u64];
+            let _: () = msg_send![desc, setSupportAttributeStrides: YES];
+            let _: () = msg_send![desc, setInitializeBindings: YES];
+            let mut err: *mut Object = core::ptr::null_mut();
+            let dev_ptr = Retained::as_ptr(device) as *mut Object;
+            let tbl: *mut Object = msg_send![dev_ptr, newArgumentTableWithDescriptor: desc error: &mut err];
+            tbl
+        }
+    }
+
+    pub fn layer_ptr(&self) -> *mut Object {
+        self.layer
+    }
+
+    pub fn sprite_atlas(&self) -> &Arc<Metal4Atlas> {
+        &self.atlas
+    }
+
+    pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        let cg = CGSize { width: size.width.0 as f64, height: size.height.0 as f64 };
+        let layer_ref: &CAMetalLayer = unsafe { &*(self.layer as *mut CAMetalLayer) };
+        layer_ref.setDrawableSize(cg);
+        self.update_path_intermediate_textures(size);
+    }
+
+    fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
+        if size.width.0 <= 0 || size.height.0 <= 0 {
+            self.path_intermediate_texture = core::ptr::null_mut();
+            self.path_intermediate_msaa_texture = core::ptr::null_mut();
+            return;
+        }
+        unsafe {
+            let dev_ptr = Retained::as_ptr(&self.device) as *mut Object;
+            let desc: *mut Object = msg_send![class!(MTLTextureDescriptor), new];
+            let _: () = msg_send![desc, setWidth: size.width.0 as usize];
+            let _: () = msg_send![desc, setHeight: size.height.0 as usize];
+            let _: () = msg_send![desc, setPixelFormat: MTLPixelFormat::BGRA8Unorm];
+            self.path_intermediate_texture = msg_send![dev_ptr, newTextureWithDescriptor: desc];
+            // Add to residency
+            if !self.residency_set.is_null() && !self.path_intermediate_texture.is_null() {
+                let _: () = msg_send![self.residency_set, addAllocation: self.path_intermediate_texture];
+            }
+
+            if self.path_sample_count > 1 {
+                let msaa_desc: *mut Object = msg_send![class!(MTLTextureDescriptor), new];
+                let _: () = msg_send![msaa_desc, setTextureType: 2usize]; // D2Multisample
+                let _: () = msg_send![msaa_desc, setStorageMode: 2usize]; // Private
+                let _: () = msg_send![msaa_desc, setSampleCount: self.path_sample_count as usize];
+                let _: () = msg_send![msaa_desc, setWidth: size.width.0 as usize];
+                let _: () = msg_send![msaa_desc, setHeight: size.height.0 as usize];
+                let _: () = msg_send![msaa_desc, setPixelFormat: MTLPixelFormat::BGRA8Unorm];
+                self.path_intermediate_msaa_texture = msg_send![dev_ptr, newTextureWithDescriptor: msaa_desc];
+                if !self.residency_set.is_null() && !self.path_intermediate_msaa_texture.is_null() {
+                    let _: () = msg_send![self.residency_set, addAllocation: self.path_intermediate_msaa_texture];
+                }
+            } else {
+                self.path_intermediate_msaa_texture = core::ptr::null_mut();
+            }
+            if !self.residency_set.is_null() { let _: () = msg_send![self.residency_set, commit]; }
+        }
+    }
+
+    pub fn set_presents_with_transaction(&mut self, presents: bool) {
+        self.presents_with_transaction = presents;
+        let layer_ref: &CAMetalLayer = unsafe { &*(self.layer as *mut CAMetalLayer) };
+        layer_ref.setPresentsWithTransaction(presents);
+    }
+
+    pub fn update_transparency(&self, _transparent: bool) {
+        // no-op for now
+    }
+
+    pub fn destroy(&self) {
+        // no-op; ARC will release retained objects when dropped
+    }
+
+    pub fn draw(&mut self, scene: &Scene) {
+        // Clear + draw batches (quads + mono sprites) using MTL4
+        unsafe {
+            let drawable: *mut Object = msg_send![self.layer, nextDrawable];
+            if drawable.is_null() {
+                return;
+            }
+            let texture: *mut Object = msg_send![drawable, texture];
+            if texture.is_null() {
+                return;
+            }
+
+            // Rotate command allocator (if available)
+            let alloc = self.command_allocators[self.frame_index % self.command_allocators.len()];
+            self.frame_index = self.frame_index.wrapping_add(1);
+
+            // id<MTL4CommandBuffer> cmd = [alloc newCommandBuffer] (fallback to device if needed)
+            let mut command_buffer: *mut Object = msg_send![alloc, newCommandBuffer];
+            if command_buffer.is_null() {
+                let dev_ptr = Retained::as_ptr(&self.device) as *mut Object;
+                command_buffer = msg_send![dev_ptr, newCommandBuffer];
+                if command_buffer.is_null() {
+                    return;
+                }
+            }
+
+            // Increment frame number and wait on prior frame if needed
+            self.frame_number = self.frame_number.wrapping_add(1);
+            if self.frame_number >= 3 {
+                let previous = self.frame_number - 3;
+                let _: () = msg_send![self.shared_event, waitUntilSignaledValue: previous timeoutMS: 10u64];
+            }
+
+            // Build a render pass descriptor for clearing (typed color attachment config)
+            let pass_desc = MTLRenderPassDescriptor::new();
+            let color0 = pass_desc.colorAttachments().objectAtIndexedSubscript(0);
+            // Texture is an Objective-C object; cast to typed ProtocolObject<dyn MTLTexture>
+            unsafe { color0.setTexture(Some(&*(texture as *mut objc2_metal::MTLTexture))); }
+            color0.setLoadAction(MTLLoadAction::Clear);
+            color0.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
+            color0.setStoreAction(MTLStoreAction::Store);
+            let pass_ptr = Retained::as_ptr(&pass_desc) as *mut Object;
+
+            // Begin MTL4 command buffer with allocator for reuse
+            let _: () = msg_send![command_buffer, beginCommandBufferWithAllocator: alloc];
+            // Label the command buffer with frame number (helps counters/debug)
+            let label = NSString::from_str(&format!("GPUI frame {}", self.frame_number));
+            let _: () = msg_send![command_buffer, setLabel: label];
+
+            let encoder: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_ptr];
+            if !encoder.is_null() {
+                // Set viewport to drawable size
+                #[repr(C)]
+                struct CGSize { width: f64, height: f64 }
+                #[repr(C)]
+                struct MTLViewport { originX: f64, originY: f64, width: f64, height: f64, znear: f64, zfar: f64 }
+                let size: CGSize = msg_send![self.layer, drawableSize];
+                let vp = MTLViewport { originX: 0.0, originY: 0.0, width: size.width, height: size.height, znear: 0.0, zfar: 1.0 };
+                let _: () = msg_send![encoder, setViewport: vp];
+
+                // Bind the Metal 4 argument table to both vertex and fragment stages
+                self.bind_argument_table(encoder);
+
+                // Create per-frame instance buffer
+                let mut pool = InstanceBufferPool::new();
+                let mut inst = pool.acquire(&self.device);
+                let mut instance_offset: usize = 0;
+
+                // Helper closures
+                #[inline]
+                unsafe fn align_offset(off: &mut usize) { *off = (*off + 255) & !255; }
+                #[inline]
+                unsafe fn upload_slice<T: Copy>(buf: *mut Object, off: usize, slice: &[T]) { let dst = (msg_send![buf, contents] as *mut u8).add(off); ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, mem::size_of_val(slice)); }
+
+                // Viewport size in shared buffer for argument table
+                let viewport_size = Size { width: DevicePixels(size.width as i32), height: DevicePixels(size.height as i32) };
+                upload_slice(self.viewport_size_buffer, 0, std::slice::from_ref(&viewport_size));
+                // Bind table entries that are global for all draws in this pass via GPU addresses
+                // unit_vertices -> buffer(0), viewport_size -> buffer(2)
+                let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
+                let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
+
+                for batch in scene.batches() {
+                    match batch {
+                        PrimitiveBatch::Quads(quads) => {
+                            if quads.is_empty() { continue; }
+                            align_offset(&mut instance_offset);
+                            let bytes_len = mem::size_of_val(quads);
+                            if instance_offset + bytes_len > inst.size { break; }
+                            // Pipeline
+                            if !self.quads_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.quads_pso]; }
+                            // Instance buffer address with offset for this draw -> buffer(1)
+                            let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                            let inst_addr = inst_base + instance_offset as u64;
+                            let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
+                            // Upload
+                            upload_slice(inst.metal_buffer, instance_offset, quads);
+                            // Draw
+                            let _: () = msg_send![encoder, drawPrimitives: 3u64 /*triangle*/ vertexStart: 0u64 vertexCount: 6u64 instanceCount: quads.len() as u64];
+                            instance_offset += bytes_len;
+                        }
+                        PrimitiveBatch::Paths(paths) => {
+                            // End current encoder
+                            let _: () = msg_send![encoder, endEncoding];
+
+                            // Ensure intermediate textures exist
+                            let size: CGSize = msg_send![self.layer, drawableSize];
+                            let drawable_px = Size { width: DevicePixels(size.width as i32), height: DevicePixels(size.height as i32) };
+                            self.update_path_intermediate_textures(drawable_px);
+
+                            // Encode rasterization pass into intermediate
+                            if !self.path_raster_pso.is_null() && !self.path_intermediate_texture.is_null() {
+                                let rp = MTLRenderPassDescriptor::new();
+                                let att = rp.colorAttachments().objectAtIndexedSubscript(0);
+                                if !self.path_intermediate_msaa_texture.is_null() {
+                                    att.setTexture(Some(&*(self.path_intermediate_msaa_texture as *mut objc2_metal::MTLTexture)));
+                                    att.setResolveTexture(Some(&*(self.path_intermediate_texture as *mut objc2_metal::MTLTexture)));
+                                    att.setStoreAction(MTLStoreAction::MultisampleResolve);
+                                } else {
+                                    att.setTexture(Some(&*(self.path_intermediate_texture as *mut objc2_metal::MTLTexture)));
+                                    att.setStoreAction(MTLStoreAction::Store);
+                                }
+                                att.setLoadAction(MTLLoadAction::Clear);
+                                att.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
+
+                                let enc2: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&rp) as *mut Object];
+                                if !enc2.is_null() {
+                                    self.bind_argument_table(enc2);
+                                    let _: () = msg_send![enc2, setRenderPipelineState: self.path_raster_pso];
+                                    // Upload vertices
+                                    let mut verts: Vec<PathRasterizationVertex> = Vec::new();
+                                    for p in paths {
+                                        for v in &p.vertices {
+                                            verts.push(PathRasterizationVertex {
+                                                xy_position: v.xy_position,
+                                                st_position: v.st_position,
+                                                color: p.color,
+                                                bounds: p.bounds.intersect(&p.content_mask.bounds),
+                                            });
+                                        }
+                                    }
+                                    align_offset(&mut instance_offset);
+                                    let bytes_len = mem::size_of_val(verts.as_slice());
+                                    if instance_offset + bytes_len <= inst.size {
+                                        upload_slice(inst.metal_buffer, instance_offset, &verts);
+                                        // vertices -> buffer(0), viewport -> buffer(1)
+                                        let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                                        let vtx_addr = inst_base + instance_offset as u64;
+                                        let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                                        let _: () = msg_send![self.argument_table, setAddress: vtx_addr atIndex: 0usize];
+                                        let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 1usize];
+                                        let _: () = msg_send![enc2, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: verts.len() as u64 instanceCount: 1u64];
+                                        instance_offset += bytes_len;
+                                    }
+                                    let _: () = msg_send![enc2, endEncoding];
+                                }
+                            }
+
+                            // Resume drawable pass with Load action
+                            let _: () = msg_send![encoder, endEncoding];
+                            let pass_desc2 = MTLRenderPassDescriptor::new();
+                            let color02 = pass_desc2.colorAttachments().objectAtIndexedSubscript(0);
+                            unsafe { color02.setTexture(Some(&*(texture as *mut objc2_metal::MTLTexture))); }
+                            color02.setLoadAction(MTLLoadAction::Load);
+                            color02.setStoreAction(MTLStoreAction::Store);
+                            encoder = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&pass_desc2) as *mut Object];
+                            if !encoder.is_null() {
+                                self.bind_argument_table(encoder);
+                            }
+
+                            // Sprites from intermediate
+                            if !self.path_sprites_pso.is_null() && !self.path_intermediate_texture.is_null() {
+                                let _: () = msg_send![encoder, setRenderPipelineState: self.path_sprites_pso];
+                                // Compute sprites
+                                let mut sprites: Vec<PathSprite> = Vec::new();
+                                if let Some(first) = paths.first() {
+                                    if paths.last().unwrap().order == first.order {
+                                        for p in paths { sprites.push(PathSprite { bounds: p.clipped_bounds() }); }
+                                    } else {
+                                        let mut b = first.clipped_bounds();
+                                        for p in paths.iter().skip(1) { b = b.union(&p.clipped_bounds()); }
+                                        sprites.push(PathSprite { bounds: b });
+                                    }
+                                }
+                                align_offset(&mut instance_offset);
+                                let bytes_len = mem::size_of_val(sprites.as_slice());
+                                if instance_offset + bytes_len <= inst.size {
+                                    upload_slice(inst.metal_buffer, instance_offset, &sprites);
+                                    // Bind via argument table: unit vertices -> 0, sprites -> 1, viewport -> 2
+                                    let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                                    let spr_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                                    let spr_addr = spr_base + instance_offset as u64;
+                                    let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                                    let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
+                                    let _: () = msg_send![self.argument_table, setAddress: spr_addr atIndex: 1usize];
+                                    let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
+                                    let _: () = msg_send![self.argument_table, setTexture: self.path_intermediate_texture atIndex: 4usize];
+                                    let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: sprites.len() as u64];
+                                    instance_offset += bytes_len;
+                                }
+                            }
+                        }
+                        PrimitiveBatch::Underlines(underlines) => {
+                            if underlines.is_empty() { continue; }
+                            align_offset(&mut instance_offset);
+                            let bytes_len = mem::size_of_val(underlines);
+                            if instance_offset + bytes_len > inst.size { break; }
+                            if !self.underlines_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.underlines_pso]; }
+                            let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                            let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                            let inst_addr = inst_base + instance_offset as u64;
+                            let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                            let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
+                            let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
+                            let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
+                            upload_slice(inst.metal_buffer, instance_offset, underlines);
+                            let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: underlines.len() as u64];
+                            instance_offset += bytes_len;
+                        }
+                        PrimitiveBatch::MonochromeSprites { texture_id, sprites } => {
+                            if sprites.is_empty() { continue; }
+                            align_offset(&mut instance_offset);
+                            let bytes_len = mem::size_of_val(sprites);
+                            if instance_offset + bytes_len > inst.size { break; }
+                            // Pipeline
+                            if !self.mono_sprites_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.mono_sprites_pso]; }
+                            // Instance buffer address with offset -> buffer(1)
+                            let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                            let inst_addr = inst_base + instance_offset as u64;
+                            let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
+                            // Atlas texture + size
+                            let tex_ref = self.atlas.texture(*texture_id);
+                            let tex_ptr = tex_ref.ptr();
+                            let tex_size = Size { width: DevicePixels(tex_ref.width() as i32), height: DevicePixels(tex_ref.height() as i32) };
+                            upload_slice(self.atlas_size_buffer, 0, std::slice::from_ref(&tex_size));
+                            let atlas_sz_addr: u64 = msg_send![self.atlas_size_buffer, gpuAddress];
+                            let _: () = msg_send![self.argument_table, setAddress: atlas_sz_addr atIndex: 3usize];
+                            let _: () = msg_send![self.argument_table, setTexture: tex_ptr atIndex: 4usize];
+                            // Upload
+                            upload_slice(inst.metal_buffer, instance_offset, sprites);
+                            // Draw
+                            let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: sprites.len() as u64];
+                            instance_offset += bytes_len;
+                        }
+                        PrimitiveBatch::Surfaces(surfaces) => {
+                            if surfaces.is_empty() { continue; }
+                            // Set pipeline
+                            if !self.surfaces_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.surfaces_pso]; }
+                            // Set argument table entries common for surfaces: unit vertices (0) and viewport (2)
+                            let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                            let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                            let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
+                            let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
+                            for surface in surfaces {
+                                // Prepare CVMetal textures for Y and CbCr planes
+                                assert_eq!(surface.image_buffer.get_pixel_format(), kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
+                                let texture_size = Size { width: DevicePixels(surface.image_buffer.get_width() as i32), height: DevicePixels(surface.image_buffer.get_height() as i32) };
+                                unsafe {
+                                    let mut y_tex: *mut ::std::ffi::c_void = core::ptr::null_mut();
+                                    let mut cbcr_tex: *mut ::std::ffi::c_void = core::ptr::null_mut();
+                                    let src = surface.image_buffer.as_concrete_TypeRef();
+                                    let _r1 = CVMetalTextureCacheCreateTextureFromImage(
+                                        kCFAllocatorDefault as _,
+                                        self.cv_texture_cache,
+                                        src as *const _,
+                                        core::ptr::null(),
+                                        MTLPixelFormat::R8Unorm as u64,
+                                        surface.image_buffer.get_width_of_plane(0),
+                                        surface.image_buffer.get_height_of_plane(0),
+                                        0,
+                                        &mut y_tex,
+                                    );
+                                    let _r2 = CVMetalTextureCacheCreateTextureFromImage(
+                                        kCFAllocatorDefault as _,
+                                        self.cv_texture_cache,
+                                        src as *const _,
+                                        core::ptr::null(),
+                                        MTLPixelFormat::RG8Unorm as u64,
+                                        surface.image_buffer.get_width_of_plane(1),
+                                        surface.image_buffer.get_height_of_plane(1),
+                                        1,
+                                        &mut cbcr_tex,
+                                    );
+                                    let y_mtl_tex = CVMetalTextureGetTexture(y_tex) as *mut Object;
+                                    let cbcr_mtl_tex = CVMetalTextureGetTexture(cbcr_tex) as *mut Object;
+
+                                    align_offset(&mut instance_offset);
+                                    let bytes_len = mem::size_of::<SurfaceBounds>();
+                                    if instance_offset + bytes_len > inst.size { break; }
+                                    // Instance buffer address (1), texture size (3), and Y/CbCr textures (4/5)
+                                    let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
+                                    let inst_addr = inst_base + instance_offset as u64;
+                                    let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
+                                    upload_slice(self.atlas_size_buffer, 0, std::slice::from_ref(&texture_size));
+                                    let ts_addr: u64 = msg_send![self.atlas_size_buffer, gpuAddress];
+                                    let _: () = msg_send![self.argument_table, setAddress: ts_addr atIndex: 3usize];
+                                    let _: () = msg_send![self.argument_table, setTexture: y_mtl_tex atIndex: 4usize];
+                                    let _: () = msg_send![self.argument_table, setTexture: cbcr_mtl_tex atIndex: 5usize];
+
+                                    // Write SurfaceBounds
+                                    let dst = (msg_send![inst.metal_buffer, contents] as *mut u8).add(instance_offset) as *mut SurfaceBounds;
+                                    ptr::write(dst, SurfaceBounds { bounds: surface.bounds, content_mask: surface.content_mask.clone() });
+                                    let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: 1u64];
+                                    instance_offset += bytes_len;
+                                    // Release CVMetalTexture objects now that we have the MTLTexture
+                                    if !y_tex.is_null() { CFRelease(y_tex as _); }
+                                    if !cbcr_tex.is_null() { CFRelease(cbcr_tex as _); }
+                                }
+                            }
+                        }
+                        _ => { /* other batches not yet ported */ }
+                    }
+                }
+
+                // End encoder and MTL4 command buffer
+                let _: () = msg_send![encoder, endEncoding];
+                let _: () = msg_send![command_buffer, endCommandBuffer];
+
+                // Submit and present via MTL4 command queue
+                unsafe {
+                    // Wait for drawable availability
+                    let _: () = msg_send![self.command_queue, waitForDrawable: drawable];
+                    // Commit buffer list (single buffer)
+                    let mut cb = command_buffer;
+                    let ptr_to_cb: *mut *mut Object = &mut cb;
+                    let _: () = msg_send![self.command_queue, commit: ptr_to_cb count: 1usize];
+                    // Signal drawable and present
+                    let _: () = msg_send![self.command_queue, signalDrawable: drawable];
+                    let _: () = msg_send![drawable, present];
+                    // Signal shared event for this frame
+                    let _: () = msg_send![self.command_queue, signalEvent: self.shared_event value: self.frame_number];
+                }
+
+                // Release instance buffer back to pool (local)
+                pool.release(inst);
+            }
+        }
+    }
+}
+
+pub unsafe fn new_renderer(
+    context: self::Context,
+    _native_window: *mut c_void,
+    _native_view: *mut c_void,
+    _bounds: crate::Size<f32>,
+    _transparent: bool,
+) -> Renderer {
+    Metal4Renderer::new(context)
+}
+
+// Minimal atlas stub implementing PlatformAtlas. This will be replaced with real uploads.
+use crate::platform::{AtlasKey, AtlasTextureKind, AtlasTile, PlatformAtlas};
+use anyhow::Result;
+use collections::FxHashMap;
+use etagere::BucketedAtlasAllocator;
+use std::borrow::Cow;
+
+pub(crate) struct Metal4Atlas(parking_lot::Mutex<Metal4AtlasState>);
+
+struct Metal4AtlasState {
+    device: AssertSend<Retained<ProtocolObject<dyn MTLDevice>>>,
+    monochrome_textures: crate::platform::AtlasTextureList<Metal4AtlasTexture>,
+    polychrome_textures: crate::platform::AtlasTextureList<Metal4AtlasTexture>,
+    tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
+}
+
+impl Metal4Atlas {
+    pub(crate) fn new(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Self {
+        Metal4Atlas(parking_lot::Mutex::new(Metal4AtlasState {
+            device: AssertSend(device),
+            monochrome_textures: Default::default(),
+            polychrome_textures: Default::default(),
+            tiles_by_key: Default::default(),
+        }))
+    }
+    fn texture(&self, id: AtlasTextureId) -> Metal4AtlasTextureView {
+        let lock = self.0.lock();
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &lock.monochrome_textures,
+            AtlasTextureKind::Polychrome => &lock.polychrome_textures,
+        };
+        let tex = textures[id.index as usize].as_ref().expect("missing texture slot");
+        Metal4AtlasTextureView { metal_texture: tex.metal_texture.clone() }
+    }
+}
+
+impl PlatformAtlas for Metal4Atlas {
+    fn get_or_insert_with<'a>(
+        &self,
+        key: &AtlasKey,
+        build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
+    ) -> Result<Option<AtlasTile>> {
+        let mut lock = self.0.lock();
+        if let Some(tile) = lock.tiles_by_key.get(key) {
+            return Ok(Some(tile.clone()));
+        }
+        let Some((size, bytes)) = build()? else {
+            return Ok(None);
+        };
+
+        let tile = lock
+            .allocate(size, key.texture_kind())
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate atlas tile"))?;
+        let texture_ref = lock.texture(tile.texture_id);
+        texture_ref.upload(tile.bounds, &bytes);
+        lock.tiles_by_key.insert(key.clone(), tile.clone());
+        Ok(Some(tile))
+    }
+
+    fn remove(&self, key: &AtlasKey) {
+        let mut lock = self.0.lock();
+        let Some(id) = lock.tiles_by_key.get(key).map(|v| v.texture_id) else {
+            return;
+        };
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
+            AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
+        };
+
+        let Some(slot) = textures
+            .textures
+            .iter_mut()
+            .find(|t| t.as_ref().is_some_and(|v| v.id == id))
+        else {
+            return;
+        };
+        if let Some(mut texture) = slot.take() {
+            texture.decrement_ref_count();
+            if texture.is_unreferenced() {
+                textures.free_list.push(id.index as usize);
+                lock.tiles_by_key.remove(key);
+            } else {
+                *slot = Some(texture);
+            }
+        }
+    }
+}
+
+impl Metal4AtlasState {
+    fn allocate(
+        &mut self,
+        size: Size<DevicePixels>,
+        kind: AtlasTextureKind,
+    ) -> Option<AtlasTile> {
+        {
+            let textures = match kind {
+                AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
+                AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            };
+            if let Some(tile) = textures.iter_mut().rev().find_map(|tex| tex.allocate(size)) {
+                return Some(tile);
+            }
+        }
+        let texture = self.push_texture(size, kind);
+        texture.allocate(size)
+    }
+
+    fn push_texture(
+        &mut self,
+        min_size: Size<DevicePixels>,
+        kind: AtlasTextureKind,
+    ) -> &mut Metal4AtlasTexture {
+        const DEFAULT_ATLAS_SIZE: Size<DevicePixels> = Size {
+            width: DevicePixels(1024),
+            height: DevicePixels(1024),
+        };
+        const MAX_ATLAS_SIZE: Size<DevicePixels> = Size {
+            width: DevicePixels(16384),
+            height: DevicePixels(16384),
+        };
+        let size = min_size.min(&MAX_ATLAS_SIZE).max(&DEFAULT_ATLAS_SIZE);
+
+        // Create texture descriptor
+        let desc = objc2_metal::MTLTextureDescriptor::new();
+        unsafe {
+            desc.setWidth(size.width.0 as usize);
+            desc.setHeight(size.height.0 as usize);
+        }
+        let (pixel_format, _usage_shader_read) = match kind {
+            AtlasTextureKind::Monochrome => (MTLPixelFormat::A8Unorm, true),
+            AtlasTextureKind::Polychrome => (MTLPixelFormat::BGRA8Unorm, true),
+        };
+        unsafe {
+            desc.setPixelFormat(pixel_format);
+            // If available in bindings: desc.setUsage(MTLTextureUsage::ShaderRead);
+        }
+        let metal_texture = unsafe {
+            self.device
+                .0
+                .newTextureWithDescriptor(&desc)
+                .expect("failed to create MTLTexture")
+        };
+
+        let textures = match kind {
+            AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
+            AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+        };
+        let index = textures.free_list.pop();
+        let atlas_texture = Metal4AtlasTexture {
+            id: AtlasTextureId {
+                index: index.unwrap_or(textures.textures.len()) as u32,
+                kind,
+            },
+            allocator: BucketedAtlasAllocator::new(size.into()),
+            metal_texture,
+            live_atlas_keys: 0,
+        };
+        if let Some(ix) = index {
+            textures.textures[ix] = Some(atlas_texture);
+            textures.textures.get_mut(ix)
+        } else {
+            textures.textures.push(Some(atlas_texture));
+            textures.textures.last_mut()
+        }
+        .unwrap()
+        .as_mut()
+        .unwrap()
+    }
+
+    fn texture(&self, id: AtlasTextureId) -> &Metal4AtlasTexture {
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &self.monochrome_textures,
+            AtlasTextureKind::Polychrome => &self.polychrome_textures,
+        };
+        textures[id.index as usize].as_ref().unwrap()
+    }
+}
+
+struct Metal4AtlasTextureView {
+    metal_texture: Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>,
+}
+
+struct Metal4AtlasTexture {
+    id: AtlasTextureId,
+    allocator: BucketedAtlasAllocator,
+    metal_texture: Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>, // id<MTLTexture>
+    live_atlas_keys: u32,
+}
+
+impl Metal4AtlasTexture {
+    fn allocate(&mut self, size: Size<DevicePixels>) -> Option<AtlasTile> {
+        let allocation = self.allocator.allocate(size.into())?;
+        let tile = AtlasTile {
+            texture_id: self.id,
+            tile_id: allocation.id.into(),
+            bounds: Bounds {
+                origin: allocation.rectangle.min.into(),
+                size,
+            },
+            padding: 0,
+        };
+        self.live_atlas_keys += 1;
+        Some(tile)
+    }
+
+    fn bytes_per_pixel(&self) -> u8 {
+        match unsafe { self.metal_texture.pixelFormat() } {
+            MTLPixelFormat::A8Unorm => 1,
+            MTLPixelFormat::R8Unorm => 1,
+            MTLPixelFormat::RGBA8Unorm | MTLPixelFormat::BGRA8Unorm => 4,
+            _ => 4,
+        }
+    }
+
+    fn decrement_ref_count(&mut self) {
+        self.live_atlas_keys -= 1;
+    }
+
+    fn is_unreferenced(&self) -> bool {
+        self.live_atlas_keys == 0
+    }
+}
+
+impl Metal4AtlasTextureView {
+    fn ptr(&self) -> *mut Object {
+        Retained::as_ptr(&self.metal_texture) as *mut _
+    }
+    fn width(&self) -> usize { unsafe { self.metal_texture.width() as usize } }
+    fn height(&self) -> usize { unsafe { self.metal_texture.height() as usize } }
+    fn upload(&self, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
+        // Build MTLRegion {origin:{x,y,0}, size:{w,h,1}}
+        #[repr(C)]
+        struct MTLOrigin { x: usize, y: usize, z: usize }
+        #[repr(C)]
+        struct MTLSize { width: usize, height: usize, depth: usize }
+        #[repr(C)]
+        struct MTLRegion { origin: MTLOrigin, size: MTLSize }
+
+        let region = MTLRegion {
+            origin: MTLOrigin {
+                x: bounds.origin.x.into(),
+                y: bounds.origin.y.into(),
+                z: 0,
+            },
+            size: MTLSize {
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+                depth: 1,
+            },
+        };
+        // Determine bpp from pixelFormat
+        let pf: MTLPixelFormat = unsafe { self.metal_texture.pixelFormat() };
+        let bpp: usize = match pf { MTLPixelFormat::A8Unorm | MTLPixelFormat::R8Unorm => 1, _ => 4 };
+        let bytes_per_row = bounds.size.width.to_bytes(bpp) as usize;
+        unsafe {
+            // replaceRegion:mipmapLevel:withBytes:bytesPerRow:
+            let tex_ptr = Retained::as_ptr(&self.metal_texture) as *mut Object;
+            let _: () = msg_send![tex_ptr, replaceRegion: &region as *const _ as *const _ mipmapLevel: 0usize withBytes: bytes.as_ptr() as *const _ bytesPerRow: bytes_per_row];
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AssertSend<T>(T);
+unsafe impl<T> Send for AssertSend<T> {}
+
+impl From<Size<DevicePixels>> for etagere::Size {
+    fn from(size: Size<DevicePixels>) -> Self {
+        etagere::Size::new(size.width.into(), size.height.into())
+    }
+}
+
+impl From<etagere::Point> for Point<DevicePixels> {
+    fn from(value: etagere::Point) -> Self {
+        Point {
+            x: DevicePixels::from(value.x),
+            y: DevicePixels::from(value.y),
+        }
+    }
+}
+
+impl From<etagere::Rectangle> for Bounds<DevicePixels> {
+    fn from(rectangle: etagere::Rectangle) -> Self {
+        Bounds {
+            origin: rectangle.min.into(),
+            size: rectangle.size().into(),
+        }
+    }
+}

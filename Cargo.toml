@@ -225,6 +225,20 @@ members = [
 ]
 default-members = ["crates/zed"]
 
+[patch.crates-io]
+# Use objc2 Metal (including Metal 4 APIs) from the metal-safe branch commit
+objc2 = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-foundation = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-core-foundation = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-io-surface = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-quartz-core = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-metal = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-metal-kit = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-metal-performance-shaders = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+objc2-metal-performance-shaders-graph = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+block2 = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+dispatch2 = { git = "https://github.com/madsmtm/objc2", rev = "325ff167465d74f0d5187b4b1b8b231d2be21efe" }
+
 [workspace.package]
 publish = false
 edition = "2024"

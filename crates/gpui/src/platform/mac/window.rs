@@ -398,6 +398,7 @@ struct MacWindowState {
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
+    visibility_callback: Option<Box<dyn FnMut(bool)>>,
     should_close_callback: Option<Box<dyn FnMut() -> bool>>,
     close_callback: Option<Box<dyn FnOnce()>>,
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
@@ -701,6 +702,7 @@ impl MacWindow {
                 activate_callback: None,
                 resize_callback: None,
                 moved_callback: None,
+                visibility_callback: None,
                 should_close_callback: None,
                 close_callback: None,
                 appearance_changed_callback: None,
@@ -1390,6 +1392,10 @@ impl PlatformWindow for MacWindow {
 
     fn on_hover_status_change(&self, _: Box<dyn FnMut(bool)>) {}
 
+    fn on_visibility_changed(&self, callback: Box<dyn FnMut(bool)>) {
+        self.0.as_ref().lock().visibility_callback = Some(callback);
+    }
+
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
         self.0.as_ref().lock().resize_callback = Some(callback);
     }
@@ -1906,18 +1912,29 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
 
 extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
-    let lock = &mut *window_state.lock();
-    unsafe {
-        if lock
-            .native_window
-            .occlusionState()
-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-        {
-            lock.move_traffic_light();
-            lock.start_display_link();
-        } else {
-            lock.stop_display_link();
+    let mut visible = false;
+    {
+        let lock = &mut *window_state.lock();
+        unsafe {
+            visible = lock
+                .native_window
+                .occlusionState()
+                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible);
+            if visible {
+                lock.move_traffic_light();
+                lock.start_display_link();
+            } else {
+                lock.stop_display_link();
+            }
         }
+    }
+
+    // Notify visibility callback if any
+    let mut lock = window_state.as_ref().lock();
+    if let Some(mut cb) = lock.visibility_callback.take() {
+        drop(lock);
+        cb(visible);
+        window_state.as_ref().lock().visibility_callback = Some(cb);
     }
 }
 

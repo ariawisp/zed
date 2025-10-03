@@ -4366,6 +4366,24 @@ impl Window {
         }))
     }
 
+    /// Register a callback for window visibility (occlusion) changes.
+    /// The callback receives a boolean indicating whether the window is visible.
+    pub fn on_visibility_changed(
+        &self,
+        cx: &App,
+        mut f: impl FnMut(bool, &mut Window, &mut App) + 'static,
+    ) {
+        let mut cx = self.to_async(cx);
+        let handle = self.handle;
+        self.platform_window.on_visibility_changed(Box::new(move |visible| {
+            handle
+                .update(&mut cx, |_, window, cx| {
+                    f(visible, window, cx);
+                })
+                .log_err();
+        }));
+    }
+
     /// Register an action listener on the window for the next frame. The type of action
     /// is determined by the first parameter of the given listener. When the next frame is rendered
     /// the listener will be cleared.

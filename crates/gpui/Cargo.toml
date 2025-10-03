@@ -25,6 +25,12 @@ test-support = [
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
 runtime_shaders = []
+macos-metal4 = [
+    "objc2",
+    "objc2-metal",
+    "objc2-metal-kit",
+    "objc2-quartz-core",
+]
 macos-blade = [
     "blade-graphics",
     "blade-macros",
@@ -146,6 +152,8 @@ media.workspace = true
 objc.workspace = true
 objc2 = { version = "0.6", optional = true }
 objc2-metal = { version = "0.3", optional = true }
+objc2-metal-kit = { version = "0.3", optional = true }
+objc2-quartz-core = { version = "0.3", optional = true }
 #TODO: replace with "objc2"
 metal.workspace = true
 

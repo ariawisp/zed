@@ -960,9 +960,22 @@ impl Element for TerminalElement {
                     let mut origin = bounds.origin;
                     origin.x += gutter;
 
+                    // Prefer Ghostty renderer's actual cell metrics when native view is active.
+                    #[allow(unused_mut)]
+                    let mut eff_line_height = line_height;
+                    #[allow(unused_mut)]
+                    let mut eff_cell_width = cell_width;
+                    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                    if self.terminal_view.read(cx).ghostty_native_active() {
+                        if let Some((w, h)) = self.terminal.read(cx).ghostty.as_ref().and_then(|b| b.renderer_cell_size()) {
+                            eff_cell_width = w as f32;
+                            eff_line_height = h as f32;
+                        }
+                    }
+
                     (
-                        TerminalBounds::new(line_height, cell_width, Bounds { origin, size }),
-                        line_height,
+                        TerminalBounds::new(eff_line_height, eff_cell_width, Bounds { origin, size }),
+                        eff_line_height,
                     )
                 };
 
@@ -1025,8 +1038,17 @@ impl Element for TerminalElement {
                     relative_highlighted_ranges.push((search_match, match_color))
                 }
                 if let Some(selection) = selection {
-                    relative_highlighted_ranges
-                        .push((selection.start..=selection.end, player_color.selection));
+                    // Skip drawing selection overlay when Ghostty native renderer is active
+                    let ghostty_native = {
+                        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                        { self.terminal_view.read(cx).ghostty_native_active() }
+                        #[cfg(not(all(feature = "ghostty-backend", target_os = "macos")))]
+                        { false }
+                    };
+                    if !ghostty_native {
+                        relative_highlighted_ranges
+                            .push((selection.start..=selection.end, player_color.selection));
+                    }
                 }
 
                 // then have that representation be converted to the appropriate highlight data structure
@@ -1185,8 +1207,20 @@ impl Element for TerminalElement {
         let paint_start = Instant::now();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let scroll_top = self.terminal_view.read(cx).scroll_top;
+            let skip_text_paint = {
+                #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                {
+                    self.terminal_view.read(cx).ghostty_native_active()
+                }
+                #[cfg(not(all(feature = "ghostty-backend", target_os = "macos")))]
+                {
+                    false
+                }
+            };
 
-            window.paint_quad(fill(bounds, layout.background_color));
+            if !skip_text_paint {
+                window.paint_quad(fill(bounds, layout.background_color));
+            }
             let origin =
                 bounds.origin + Point::new(layout.gutter, px(0.)) - Point::new(px(0.), scroll_top);
 
@@ -1246,13 +1280,8 @@ impl Element for TerminalElement {
                         }
                     });
 
-                    for rect in &layout.rects {
-                        rect.paint(origin, &layout.dimensions, window);
-                    }
-
-                    for (relative_highlighted_range, color) in
-                        layout.relative_highlighted_ranges.iter()
-                    {
+                    // Always paint selection highlights/overlays even if text is drawn by Ghostty
+                    for (relative_highlighted_range, color) in layout.relative_highlighted_ranges.iter() {
                         if let Some((start_y, highlighted_range_lines)) =
                             to_highlighted_range_lines(relative_highlighted_range, layout, origin)
                         {
@@ -1272,46 +1301,69 @@ impl Element for TerminalElement {
                         }
                     }
 
-                    // Paint batched text runs instead of individual cells
-                    let text_paint_start = Instant::now();
-                    for batch in &layout.batched_text_runs {
-                        batch.paint(origin, &layout.dimensions, window, cx);
+                    if !skip_text_paint {
+                        for rect in &layout.rects {
+                            rect.paint(origin, &layout.dimensions, window);
+                        }
+                        // Paint batched text runs instead of individual cells
+                        let text_paint_start = Instant::now();
+                        for batch in &layout.batched_text_runs {
+                            batch.paint(origin, &layout.dimensions, window, cx);
+                        }
+                        let text_paint_time = text_paint_start.elapsed();
+                        let total_paint_time = paint_start.elapsed();
+                        log::debug!(
+                            "Terminal paint: {} text runs, {} rects, text paint took {:?}, total paint took {:?}",
+                            layout.batched_text_runs.len(),
+                            layout.rects.len(),
+                            text_paint_time,
+                            total_paint_time
+                        );
                     }
-                    let text_paint_time = text_paint_start.elapsed();
 
-                    if let Some(text_to_mark) = &marked_text_cloned
+                    // Skip preedit overlay if Ghostty native view is active
+                    let skip_text_paint = {
+                        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                        { self.terminal_view.read(cx).ghostty_native_active() }
+                        #[cfg(not(all(feature = "ghostty-backend", target_os = "macos")))]
+                        { false }
+                    };
+
+                    if !skip_text_paint && let Some(text_to_mark) = &marked_text_cloned
                         && !text_to_mark.is_empty()
                             && let Some(cursor_layout) = &original_cursor {
-                                let ime_position = cursor_layout.bounding_rect(origin).origin;
-                                let mut ime_style = layout.base_text_style.clone();
-                                ime_style.underline = Some(UnderlineStyle {
-                                    color: Some(ime_style.color),
-                                    thickness: px(1.0),
-                                    wavy: false,
-                                });
+                        let ime_position = cursor_layout.bounding_rect(origin).origin;
+                        let mut ime_style = layout.base_text_style.clone();
+                        ime_style.underline = Some(UnderlineStyle {
+                            color: Some(ime_style.color),
+                            thickness: px(1.0),
+                            wavy: false,
+                        });
 
-                                let shaped_line = window.text_system().shape_line(
-                                    text_to_mark.clone().into(),
-                                    ime_style.font_size.to_pixels(window.rem_size()),
-                                    &[TextRun {
-                                        len: text_to_mark.len(),
-                                        font: ime_style.font(),
-                                        color: ime_style.color,
-                                        background_color: None,
-                                        underline: ime_style.underline,
-                                        strikethrough: None,
-                                    }],
-                                    None
-                                );
-                                shaped_line
-                                    .paint(ime_position, layout.dimensions.line_height, window, cx)
-                                    .log_err();
+                        let shaped_line = window.text_system().shape_line(
+                            text_to_mark.clone().into(),
+                            ime_style.font_size.to_pixels(window.rem_size()),
+                            &[TextRun {
+                                len: text_to_mark.len(),
+                                font: ime_style.font(),
+                                color: ime_style.color,
+                                background_color: None,
+                                underline: ime_style.underline,
+                                strikethrough: None,
+                            }],
+                            None
+                        );
+                        shaped_line
+                            .paint(ime_position, layout.dimensions.line_height, window, cx)
+                            .log_err();
+                    }
+
+                    if !skip_text_paint {
+                        if self.cursor_visible && marked_text_cloned.is_none()
+                            && let Some(mut cursor) = original_cursor {
+                                cursor.paint(origin, window, cx);
                             }
-
-                    if self.cursor_visible && marked_text_cloned.is_none()
-                        && let Some(mut cursor) = original_cursor {
-                            cursor.paint(origin, window, cx);
-                        }
+                    }
 
                     if let Some(mut element) = block_below_cursor_element {
                         element.paint(window, cx);
@@ -1320,14 +1372,7 @@ impl Element for TerminalElement {
                     if let Some(mut element) = hyperlink_tooltip {
                         element.paint(window, cx);
                     }
-                    let total_paint_time = paint_start.elapsed();
-                    log::debug!(
-                        "Terminal paint: {} text runs, {} rects, text paint took {:?}, total paint took {:?}",
-                        layout.batched_text_runs.len(),
-                        layout.rects.len(),
-                        text_paint_time,
-                        total_paint_time
-                    );
+                    // When skipping text paint (Ghostty native view), we still processed input above.
                 },
             );
         });

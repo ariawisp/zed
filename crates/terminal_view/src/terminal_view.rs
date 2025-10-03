@@ -10,7 +10,7 @@ use assistant_slash_command::SlashCommandRegistry;
 use editor::{EditorSettings, actions::SelectAll};
 use gpui::{
     Action, AnyElement, App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyContext, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, Pixels, Render,
+    KeyContext, KeyDownEvent, KeyUpEvent, Keystroke, MouseButton, MouseDownEvent, Pixels, Render,
     ScrollWheelEvent, Styled, Subscription, Task, WeakEntity, actions, anchored, deferred, div,
 };
 use persistence::TERMINAL_DB;
@@ -327,6 +327,15 @@ impl TerminalView {
         range: Option<Range<usize>>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+        {
+            // Forward preedit to Ghostty renderer when active
+            self.terminal.update(cx, |term, _| {
+                if let Some(b) = term.ghostty.as_mut() {
+                    b.renderer_preedit(Some(&text));
+                }
+            });
+        }
         self.ime_state = Some(ImeState {
             marked_text: text,
             marked_range_utf16: range,
@@ -344,6 +353,14 @@ impl TerminalView {
     /// Clears the marked (pre-edit) text state.
     pub(crate) fn clear_marked_text(&mut self, cx: &mut Context<Self>) {
         if self.ime_state.is_some() {
+            #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+            {
+                self.terminal.update(cx, |term, _| {
+                    if let Some(b) = term.ghostty.as_mut() {
+                        b.renderer_preedit(None);
+                    }
+                });
+            }
             self.ime_state = None;
             cx.notify();
         }
@@ -354,6 +371,10 @@ impl TerminalView {
         if !text.is_empty() {
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
+                #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                if let Some(b) = term.ghostty.as_mut() {
+                    b.renderer_preedit(None);
+                }
             });
         }
     }
@@ -1022,6 +1043,12 @@ impl TerminalView {
         });
     }
 
+    fn key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |term, _| {
+            term.key_up(&event.keystroke, TerminalSettings::get_global(cx).option_as_meta);
+        });
+    }
+
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
@@ -1038,6 +1065,11 @@ impl TerminalView {
             terminal.set_cursor_shape(CursorShape::Hollow);
         });
         cx.notify();
+    }
+
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    pub fn ghostty_native_active(&self) -> bool {
+        self.native_subview.is_some()
     }
 }
 
@@ -1079,6 +1111,17 @@ impl Render for TerminalView {
                     window.set_native_subview_frame(ptr, frame);
                 }
             }
+
+            // Keep Ghostty renderer visibility in sync with window occlusion on macOS
+            let terminal_handle = self.terminal.clone();
+            window.on_visibility_changed(cx, move |visible, _window, cx| {
+                terminal_handle.update(cx, |term, _| {
+                    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+                    if let Some(b) = term.ghostty.as_mut() {
+                        b.set_renderer_visible(visible);
+                    }
+                });
+            });
         }
 
         div()
@@ -1103,6 +1146,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(TerminalView::select_all))
             .on_action(cx.listener(TerminalView::rerun_task))
             .on_key_down(cx.listener(Self::key_down))
+            .on_key_up(cx.listener(Self::key_up))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {

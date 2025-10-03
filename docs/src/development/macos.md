@@ -71,6 +71,18 @@ Try `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`
 
 If you're on macOS 26, try `xcodebuild -downloadComponent MetalToolchain`
 
+### Enabling the Metal 4 renderer
+
+On Apple Silicon with macOS 26 (or newer) and Xcode’s Metal 4 toolchain installed, you can enable Zed’s Metal 4 renderer:
+
+```
+cargo run -p zed --features macos-metal4
+```
+
+- Shaders compile as Metal Shading Language 4.0 (`-std=metal4.0`).
+- The renderer uses Metal 4 command allocators, argument tables, and a residency set for better CPU efficiency and stability.
+- If the `metal` CLI is missing, ensure Xcode is selected (`xcode-select`) and the Metal toolchain is installed.
+
 ### Cargo errors claiming that a dependency is using unstable features
 
 Try `cargo clean` and `cargo build`.

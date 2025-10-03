@@ -207,6 +207,7 @@ mod macos {
                 "macosx",
                 "metal",
                 "-gline-tables-only",
+                "-std=metal4.0",
                 "-mmacosx-version-min=10.15.7",
                 "-MO",
                 "-c",
