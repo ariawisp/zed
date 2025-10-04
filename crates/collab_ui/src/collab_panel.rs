@@ -104,6 +104,7 @@ pub fn init(cx: &mut App) {
         });
         // TODO: make it possible to bind this one to a held key for push to talk?
         // how to make "toggle_on_modifiers_press" contextual?
+        #[cfg(feature = "rtc")]
         workspace.register_action(|_, _: &Mute, window, cx| {
             let room = ActiveCall::global(cx).read(cx).room().cloned();
             if let Some(room) = room {
@@ -112,6 +113,7 @@ pub fn init(cx: &mut App) {
                 });
             }
         });
+        #[cfg(feature = "rtc")]
         workspace.register_action(|_, _: &Deafen, window, cx| {
             let room = ActiveCall::global(cx).read(cx).room().cloned();
             if let Some(room) = room {
@@ -139,6 +141,7 @@ pub fn init(cx: &mut App) {
                 });
             });
         });
+        #[cfg(feature = "rtc")]
         workspace.register_action(|_, _: &ScreenShare, window, cx| {
             let room = ActiveCall::global(cx).read(cx).room().cloned();
             if let Some(room) = room {
@@ -516,7 +519,8 @@ impl CollabPanel {
                             is_pending: false,
                             role: room.local_participant().role,
                         });
-                        let mut projects = room.local_participant().projects.iter().peekable();
+                        let lp = room.local_participant();
+                        let mut projects = lp.projects.iter().peekable();
                         while let Some(project) = projects.next() {
                             self.entries.push(ListEntry::ParticipantProject {
                                 project_id: project.id,
@@ -916,9 +920,18 @@ impl CollabPanel {
             self.user_store.read(cx).current_user().map(|user| user.id) == Some(user_id);
         let tooltip = format!("Follow {}", user.github_login);
 
-        let is_call_admin = ActiveCall::global(cx).read(cx).room().is_some_and(|room| {
-            room.read(cx).local_participant().role == proto::ChannelRole::Admin
-        });
+        let is_call_admin = {
+            #[cfg(feature = "rtc")]
+            {
+                ActiveCall::global(cx).read(cx).room().is_some_and(|room| {
+                    room.read(cx).local_participant().role == proto::ChannelRole::Admin
+                })
+            }
+            #[cfg(not(feature = "rtc"))]
+            {
+                false
+            }
+        };
 
         ListItem::new(user.github_login.clone())
             .start_slot(Avatar::new(user.avatar_uri.clone()))
@@ -1400,19 +1413,22 @@ impl CollabPanel {
             let user_id = contact.user.id;
 
             if contact.online && !contact.busy {
-                let label = if in_room {
-                    format!("Invite {} to join", contact.user.github_login)
-                } else {
-                    format!("Call {}", contact.user.github_login)
-                };
-                context_menu = context_menu.entry(label, None, {
-                    let this = this.clone();
-                    move |window, cx| {
-                        this.update(cx, |this, cx| {
-                            this.call(user_id, window, cx);
-                        });
-                    }
-                });
+                #[cfg(feature = "rtc")]
+                {
+                    let label = if in_room {
+                        format!("Invite {} to join", contact.user.github_login)
+                    } else {
+                        format!("Call {}", contact.user.github_login)
+                    };
+                    context_menu = context_menu.entry(label, None, {
+                        let this = this.clone();
+                        move |window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.call(user_id, window, cx);
+                            });
+                        }
+                    });
+                }
             }
 
             context_menu.entry("Remove Contact", None, {
@@ -1522,8 +1538,11 @@ impl CollabPanel {
                     }
                 },
                 ListEntry::Contact { contact, calling } => {
-                    if contact.online && !contact.busy && !calling {
-                        self.call(contact.user.id, window, cx);
+                    #[cfg(feature = "rtc")]
+                    {
+                        if contact.online && !contact.busy && !calling {
+                            self.call(contact.user.id, window, cx);
+                        }
                     }
                 }
                 ListEntry::ParticipantProject {
@@ -2187,6 +2206,7 @@ impl CollabPanel {
             .detach();
     }
 
+    #[cfg(feature = "rtc")]
     fn call(&mut self, recipient_user_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         ActiveCall::global(cx)
             .update(cx, |call, cx| {

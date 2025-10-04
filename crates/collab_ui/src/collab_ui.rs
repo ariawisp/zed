@@ -1,6 +1,7 @@
 pub mod channel_view;
 pub mod collab_panel;
 pub mod notification_panel;
+#[cfg(feature = "rtc")]
 pub mod notifications;
 mod panel_settings;
 
@@ -24,6 +25,7 @@ pub fn init(app_state: &Arc<AppState>, cx: &mut App) {
     channel_view::init(cx);
     collab_panel::init(cx);
     notification_panel::init(cx);
+    #[cfg(feature = "rtc")]
     notifications::init(app_state, cx);
     title_bar::init(cx);
 }

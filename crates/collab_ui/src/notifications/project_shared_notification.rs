@@ -152,3 +152,4 @@ impl Render for ProjectSharedNotification {
         )
     }
 }
+#![cfg(feature = "rtc")]

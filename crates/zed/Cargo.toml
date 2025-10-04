@@ -13,7 +13,14 @@ workspace = true
 [features]
 default = []
 # Enable real-time calling (LiveKit/WebRTC) integration
-rtc = ["dep:audio", "dep:call"]
+rtc = [
+    "dep:audio",
+    "dep:call",
+    # Propagate to dependent crates so their RTC-gated UI compiles when enabled
+    "call/rtc",
+    "title_bar/rtc",
+    "collab_ui/rtc",
+]
 
 [[bin]]
 name = "zed"

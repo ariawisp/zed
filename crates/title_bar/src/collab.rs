@@ -30,6 +30,7 @@ actions!(
     ]
 );
 
+#[cfg(feature = "rtc")]
 fn toggle_screen_sharing(
     screen: anyhow::Result<Option<Rc<dyn ScreenCaptureSource>>>,
     window: &mut Window,
@@ -86,6 +87,15 @@ fn toggle_screen_sharing(
     toggle_screen_sharing.detach_and_prompt_err("Sharing Screen Failed", window, cx, |e, _, _| Some(format!("{:?}\n\nPlease check that you have given Zed permissions to record your screen in Settings.", e)));
 }
 
+#[cfg(not(feature = "rtc"))]
+fn toggle_screen_sharing(
+    _screen: anyhow::Result<Option<Rc<dyn ScreenCaptureSource>>>,
+    _window: &mut Window,
+    _cx: &mut App,
+) {
+}
+
+#[cfg(feature = "rtc")]
 fn toggle_mute(_: &ToggleMute, cx: &mut App) {
     let call = ActiveCall::global(cx).read(cx);
     if let Some(room) = call.room().cloned() {
@@ -106,11 +116,18 @@ fn toggle_mute(_: &ToggleMute, cx: &mut App) {
     }
 }
 
+#[cfg(not(feature = "rtc"))]
+fn toggle_mute(_: &ToggleMute, _cx: &mut App) {}
+
+#[cfg(feature = "rtc")]
 fn toggle_deafen(_: &ToggleDeafen, cx: &mut App) {
     if let Some(room) = ActiveCall::global(cx).read(cx).room().cloned() {
         room.update(cx, |room, cx| room.toggle_deafen(cx));
     }
 }
+
+#[cfg(not(feature = "rtc"))]
+fn toggle_deafen(_: &ToggleDeafen, _cx: &mut App) {}
 
 fn render_color_ribbon(color: Hsla) -> impl Element {
     canvas(
@@ -167,8 +184,18 @@ impl TitleBar {
                         &current_user,
                         peer_id,
                         true,
-                        room.is_speaking(),
-                        room.is_muted(),
+                        {
+                            #[cfg(feature = "rtc")]
+                            { room.is_speaking() }
+                            #[cfg(not(feature = "rtc"))]
+                            { false }
+                        },
+                        {
+                            #[cfg(feature = "rtc")]
+                            { room.is_muted() }
+                            #[cfg(not(feature = "rtc"))]
+                            { false }
+                        },
                         None,
                         room,
                         project_id,
@@ -198,8 +225,18 @@ impl TitleBar {
                             &collaborator.user,
                             collaborator.peer_id,
                             is_present,
-                            collaborator.speaking,
-                            collaborator.muted,
+                            {
+                                #[cfg(feature = "rtc")]
+                                { collaborator.speaking }
+                                #[cfg(not(feature = "rtc"))]
+                                { false }
+                            },
+                            {
+                                #[cfg(feature = "rtc")]
+                                { collaborator.muted }
+                                #[cfg(not(feature = "rtc"))]
+                                { false }
+                            },
                             is_following.then_some(player_color.selection),
                             room,
                             project_id,
@@ -321,6 +358,7 @@ impl TitleBar {
         )
     }
 
+    #[cfg(feature = "rtc")]
     pub(crate) fn render_call_controls(
         &self,
         window: &mut Window,
@@ -339,13 +377,48 @@ impl TitleBar {
         let project = self.project.read(cx);
         let is_local = project.is_local() || project.is_via_remote_server();
         let is_shared = is_local && project.is_shared();
-        let is_muted = room.is_muted();
-        let muted_by_user = room.muted_by_user();
-        let is_deafened = room.is_deafened().unwrap_or(false);
-        let is_screen_sharing = room.is_sharing_screen();
-        let can_use_microphone = room.can_use_microphone();
-        let can_share_projects = room.can_share_projects();
-        let screen_sharing_supported = cx.is_screen_capture_supported();
+        let is_muted = {
+            #[cfg(feature = "rtc")]
+            { room.is_muted() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let muted_by_user = {
+            #[cfg(feature = "rtc")]
+            { room.muted_by_user() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let is_deafened = {
+            #[cfg(feature = "rtc")]
+            { room.is_deafened().unwrap_or(false) }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let is_screen_sharing = {
+            #[cfg(feature = "rtc")]
+            { room.is_sharing_screen() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let can_use_microphone = {
+            #[cfg(feature = "rtc")]
+            { room.can_use_microphone() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let can_share_projects = {
+            #[cfg(feature = "rtc")]
+            { room.can_share_projects() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
+        let screen_sharing_supported = {
+            #[cfg(feature = "rtc")]
+            { cx.is_screen_capture_supported() }
+            #[cfg(not(feature = "rtc"))]
+            { false }
+        };
 
         let mut children = Vec::new();
 
@@ -431,6 +504,7 @@ impl TitleBar {
             );
         }
 
+        #[cfg(feature = "rtc")]
         children.push(
             IconButton::new(
                 "mute-sound",
@@ -513,6 +587,7 @@ impl TitleBar {
         children
     }
 
+    #[cfg(feature = "rtc")]
     fn render_screen_list(&self) -> impl IntoElement {
         PopoverMenu::new("screen-share-screen-list")
             .with_handle(self.screen_share_popover_handle.clone())
@@ -589,7 +664,29 @@ impl TitleBar {
     }
 }
 
+#[cfg(not(feature = "rtc"))]
+fn pick_default_screen(_cx: &App) -> Task<anyhow::Result<Option<Rc<dyn ScreenCaptureSource>>>> {
+    Task::ready(Ok(None))
+}
+
+#[cfg(not(feature = "rtc"))]
+impl TitleBar {
+    pub(crate) fn render_call_controls(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        Vec::new()
+    }
+
+    fn render_screen_list(&self) -> impl IntoElement {
+        // Unused when RTC is disabled
+        div()
+    }
+}
+
 /// Picks the screen to share when clicking on the main screen sharing button.
+#[cfg(feature = "rtc")]
 fn pick_default_screen(cx: &App) -> Task<anyhow::Result<Option<Rc<dyn ScreenCaptureSource>>>> {
     let source = cx.screen_capture_sources();
     cx.spawn(async move |_| {
