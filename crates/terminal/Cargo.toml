@@ -12,7 +12,7 @@ test-support = [
     "gpui/test-support",
     "settings/test-support",
 ]
-ghostty-backend = ["dep:libghostty"]
+ghostty-backend = ["dep:libghostty", "libghostty/macos-renderer"]
 
 [lints]
 workspace = true

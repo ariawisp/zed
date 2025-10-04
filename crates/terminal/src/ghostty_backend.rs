@@ -1,14 +1,14 @@
 #![cfg(feature = "ghostty-backend")]
 
 use libghostty::{input, pty::Pty, vt::Session};
-#[cfg(all(target_os = "macos", feature = "macos-renderer"))]
+#[cfg(target_os = "macos")]
 use libghostty::renderer;
 use std::{ffi::CString, io, os::raw::c_void};
 
 pub struct GhosttyBackend {
     vt: Session,
     pty: Pty,
-    #[cfg(all(target_os = "macos", feature = "macos-renderer"))]
+    #[cfg(target_os = "macos")]
     renderer: Option<renderer::Renderer>,
 }
 
@@ -19,7 +19,7 @@ impl GhosttyBackend {
         Ok(Self { vt, pty, #[cfg(target_os = "macos")] renderer: None })
     }
 
-    #[cfg(all(target_os = "macos", feature = "macos-renderer"))]
+    #[cfg(target_os = "macos")]
     pub fn attach_renderer(&mut self, nsview: *mut c_void, content_scale: f64) -> io::Result<()> {
         let mut r = renderer::Renderer::new_macos(nsview, content_scale).map_err(to_io)?;
         r.attach_vt(&self.vt).map_err(to_io)?;

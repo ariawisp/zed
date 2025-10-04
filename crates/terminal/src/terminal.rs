@@ -565,7 +565,6 @@ impl TerminalBuilder {
             last_mouse: None,
             matches: Vec::new(),
             selection_head: None,
-            #[cfg(not(feature = "ghostty-backend"))]
             pty_info,
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
@@ -859,7 +858,7 @@ impl Terminal {
         backend.attach_renderer(nsview, content_scale).expect("ghostty attach renderer failed");
         let fd = backend.pty_fd();
         use std::os::fd::FromRawFd;
-        cx.background_spawn(async move |terminal, _cx| {
+        cx.spawn(async move |terminal, _cx| {
             let fd2 = unsafe { libc::dup(fd) };
             if fd2 < 0 { return anyhow::Ok(()) };
             let mut file = unsafe { std::fs::File::from_raw_fd(fd2) };
@@ -868,7 +867,7 @@ impl Terminal {
                 match file.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        terminal.update(|t: &mut Terminal, _| {
+                        terminal.update(_cx, |t, _| {
                             if let Some(b) = t.ghostty.as_mut() {
                                 b.feed(&buf[..n]);
                                 b.refresh();
@@ -1069,16 +1068,7 @@ impl Terminal {
 
                 #[cfg(feature = "ghostty-backend")]
                 {
-                    if let Some(b) = self.ghostty.as_mut() {
-                        if let Some((sel, _)) = selection {
-                            let tl = sel.start();
-                            let br = sel.end();
-                            b.renderer_set_selection(false, tl.line.0 as u16, tl.column.0 as u16, br.line.0 as u16, br.column.0 as u16);
-                        } else {
-                            b.renderer_clear_selection();
-                        }
-                    }
-                    // Don't draw overlay selection when Ghostty owns it
+                    // Ghostty native renderer handles selection internally; UI overlay can be cleared.
                     self.last_content.selection = None;
                 }
 
@@ -1105,16 +1095,7 @@ impl Terminal {
                     term.selection = Some(selection);
 
                     #[cfg(feature = "ghostty-backend")]
-                    {
-                        if let Some(b) = self.ghostty.as_mut() {
-                            if let Some(sel) = &term.selection {
-                                let tl = sel.start();
-                                let br = sel.end();
-                                b.renderer_set_selection(false, tl.line.0 as u16, tl.column.0 as u16, br.line.0 as u16, br.column.0 as u16);
-                            }
-                        }
-                        self.last_content.selection = None;
-                    }
+                    { self.last_content.selection = None; }
 
                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                     if let Some(selection_text) = term.selection_to_string() {
