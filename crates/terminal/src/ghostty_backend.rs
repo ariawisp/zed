@@ -1,12 +1,14 @@
 #![cfg(feature = "ghostty-backend")]
 
-use libghostty::{input, pty::Pty, renderer, vt::Session};
+use libghostty::{input, pty::Pty, vt::Session};
+#[cfg(all(target_os = "macos", feature = "macos-renderer"))]
+use libghostty::renderer;
 use std::{ffi::CString, io, os::raw::c_void};
 
 pub struct GhosttyBackend {
     vt: Session,
     pty: Pty,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-renderer"))]
     renderer: Option<renderer::Renderer>,
 }
 
@@ -17,7 +19,7 @@ impl GhosttyBackend {
         Ok(Self { vt, pty, #[cfg(target_os = "macos")] renderer: None })
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-renderer"))]
     pub fn attach_renderer(&mut self, nsview: *mut c_void, content_scale: f64) -> io::Result<()> {
         let mut r = renderer::Renderer::new_macos(nsview, content_scale).map_err(to_io)?;
         r.attach_vt(&self.vt).map_err(to_io)?;
@@ -54,81 +56,14 @@ impl GhosttyBackend {
         input::encode_scroll(&self.vt, dx, dy, row, col, mods)
     }
 
-    pub fn encode_key_event(&self, ev: &libghostty_sys::ghostty_input_key_s) -> Vec<u8> {
-        input::encode_key(&self.vt, ev)
-    }
+    pub fn encode_key_event(&self, ev: &input::KeyEvent) -> Vec<u8> { input::encode_key(&self.vt, ev) }
 
-    pub fn link_uri_grid(&self, row: u16, col: u16) -> Option<String> {
-        use libghostty_sys as sys;
-        let mut len: usize = 0;
-        // allocate 2KB buffer for typical URIs
-        let mut buf = vec![0i8; 2048];
-        let ok = unsafe {
-            sys::ghostty_vt_link_uri_grid(
-                self.vt.as_raw(),
-                row,
-                col,
-                buf.as_mut_ptr(),
-                buf.len(),
-                &mut len as *mut usize,
-            )
-        };
-        if !ok || len == 0 { return None; }
-        let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, len) };
-        Some(String::from_utf8_lossy(bytes).to_string())
-    }
+    pub fn link_uri_grid(&self, row: u16, col: u16) -> Option<String> { self.vt.link_uri_grid(row, col) }
 
-    pub fn link_span_grid_row(&self, row: u16, col: u16) -> Option<(u16, u16)> {
-        use libghostty_sys as sys;
-        let mut c0: u16 = 0;
-        let mut c1: u16 = 0;
-        let ok = unsafe {
-            sys::ghostty_vt_link_span_grid_row(
-                self.vt.as_raw(),
-                row,
-                col,
-                &mut c0 as *mut u16,
-                &mut c1 as *mut u16,
-            )
-        };
-        if ok { Some((c0, c1)) } else { None }
-    }
+    pub fn link_span_grid_row(&self, row: u16, col: u16) -> Option<(u16, u16)> { self.vt.link_span_grid_row(row, col) }
 
     pub fn read_selection_text_grid(&self, row0: u16, col0: u16, row1: u16, col1: u16) -> Option<String> {
-        use libghostty_sys as sys;
-        let cols = self.vt.cols() as usize;
-        if cols == 0 { return None; }
-        let (r0, r1) = if row0 <= row1 { (row0, row1) } else { (row1, row0) };
-        let (c0, c1) = if col0 <= col1 { (col0, col1) } else { (col1, col0) };
-        let mut out = String::new();
-        for row in r0..=r1 {
-            let mut cells: Vec<sys::ghostty_vt_cell_s> = vec![unsafe { std::mem::zeroed() }; cols];
-            let mut arena = vec![0u8; cols * 8 + 64];
-            let mut used: usize = 0;
-            unsafe {
-                sys::ghostty_vt_viewport_row_cells_into(
-                    self.vt.as_raw(),
-                    row,
-                    cells.as_mut_ptr(),
-                    cells.len(),
-                    arena.as_mut_ptr() as *mut i8,
-                    arena.len(),
-                    &mut used as *mut usize,
-                );
-            }
-            let sc0 = if row == r0 { c0 as usize } else { 0usize };
-            let sc1 = if row == r1 { c1 as usize } else { cols.saturating_sub(1) };
-            for i in sc0..=sc1 {
-                let cell = unsafe { cells.get_unchecked(i) };
-                if cell.width == 0 || cell.text.is_null() { continue; }
-                let len = cell.text_len as usize;
-                if len == 0 { continue; }
-                let bytes = unsafe { std::slice::from_raw_parts(cell.text as *const u8, len) };
-                out.push_str(&String::from_utf8_lossy(bytes));
-            }
-            if row != r1 { out.push('\n'); }
-        }
-        Some(out)
+        self.vt.read_selection_text_grid(row0, col0, row1, col1)
     }
 
     pub fn refresh(&mut self) {

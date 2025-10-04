@@ -16,16 +16,17 @@ use objc2_metal::{
     MTLClearColor, MTLLoadAction, MTLPixelFormat, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
     MTLStoreAction,
 };
+use objc2_metal::MTLTexture; // bring trait methods like width/height/pixelFormat into scope
 use objc2_quartz_core::CAMetalLayer;
 use objc2_core_foundation::CGSize;
 use objc2_foundation::NSString;
-use core_foundation::base::{kCFAllocatorDefault, CFAllocatorRef, CFRelease};
+use core_foundation::base::{kCFAllocatorDefault, CFAllocatorRef, CFRelease, TCFType};
 use core_foundation::dictionary::CFDictionaryRef;
 use core_video::image_buffer::CVImageBuffer;
 use core_video::pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
 
 #[link(name = "CoreVideo", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CVMetalTextureCacheCreate(
         allocator: CFAllocatorRef,
         cache_attributes: CFDictionaryRef,
@@ -830,23 +831,25 @@ impl Metal4Renderer {
                                     let mut y_tex: *mut ::std::ffi::c_void = core::ptr::null_mut();
                                     let mut cbcr_tex: *mut ::std::ffi::c_void = core::ptr::null_mut();
                                     let src = surface.image_buffer.as_concrete_TypeRef();
+                                    let pf_y: u64 = unsafe { std::mem::transmute::<MTLPixelFormat, u64>(MTLPixelFormat::R8Unorm) };
                                     let _r1 = CVMetalTextureCacheCreateTextureFromImage(
                                         kCFAllocatorDefault as _,
                                         self.cv_texture_cache,
                                         src as *const _,
                                         core::ptr::null(),
-                                        MTLPixelFormat::R8Unorm as u64,
+                                        pf_y,
                                         surface.image_buffer.get_width_of_plane(0),
                                         surface.image_buffer.get_height_of_plane(0),
                                         0,
                                         &mut y_tex,
                                     );
+                                    let pf_cbcr: u64 = unsafe { std::mem::transmute::<MTLPixelFormat, u64>(MTLPixelFormat::RG8Unorm) };
                                     let _r2 = CVMetalTextureCacheCreateTextureFromImage(
                                         kCFAllocatorDefault as _,
                                         self.cv_texture_cache,
                                         src as *const _,
                                         core::ptr::null(),
-                                        MTLPixelFormat::RG8Unorm as u64,
+                                        pf_cbcr,
                                         surface.image_buffer.get_width_of_plane(1),
                                         surface.image_buffer.get_height_of_plane(1),
                                         1,
@@ -972,8 +975,9 @@ impl PlatformAtlas for Metal4Atlas {
         let tile = lock
             .allocate(size, key.texture_kind())
             .ok_or_else(|| anyhow::anyhow!("failed to allocate atlas tile"))?;
-        let texture_ref = lock.texture(tile.texture_id);
-        texture_ref.upload(tile.bounds, &bytes);
+        let texture = lock.texture(tile.texture_id);
+        let texture_view = Metal4AtlasTextureView { metal_texture: texture.metal_texture.clone() };
+        texture_view.upload(tile.bounds, &bytes);
         lock.tiles_by_key.insert(key.clone(), tile.clone());
         Ok(Some(tile))
     }
@@ -1171,7 +1175,7 @@ impl Metal4AtlasTextureView {
         };
         // Determine bpp from pixelFormat
         let pf: MTLPixelFormat = unsafe { self.metal_texture.pixelFormat() };
-        let bpp: usize = match pf { MTLPixelFormat::A8Unorm | MTLPixelFormat::R8Unorm => 1, _ => 4 };
+        let bpp: u8 = match pf { MTLPixelFormat::A8Unorm | MTLPixelFormat::R8Unorm => 1, _ => 4 };
         let bytes_per_row = bounds.size.width.to_bytes(bpp) as usize;
         unsafe {
             // replaceRegion:mipmapLevel:withBytes:bytesPerRow:
@@ -1185,26 +1189,4 @@ impl Metal4AtlasTextureView {
 struct AssertSend<T>(T);
 unsafe impl<T> Send for AssertSend<T> {}
 
-impl From<Size<DevicePixels>> for etagere::Size {
-    fn from(size: Size<DevicePixels>) -> Self {
-        etagere::Size::new(size.width.into(), size.height.into())
-    }
-}
-
-impl From<etagere::Point> for Point<DevicePixels> {
-    fn from(value: etagere::Point) -> Self {
-        Point {
-            x: DevicePixels::from(value.x),
-            y: DevicePixels::from(value.y),
-        }
-    }
-}
-
-impl From<etagere::Rectangle> for Bounds<DevicePixels> {
-    fn from(rectangle: etagere::Rectangle) -> Self {
-        Bounds {
-            origin: rectangle.min.into(),
-            size: rectangle.size().into(),
-        }
-    }
-}
+// Conversions are provided in metal_atlas.rs

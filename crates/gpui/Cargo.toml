@@ -27,6 +27,8 @@ leak-detection = ["backtrace"]
 runtime_shaders = []
 macos-metal4 = [
     "objc2",
+    "objc2-foundation",
+    "objc2-core-foundation",
     "objc2-metal",
     "objc2-metal-kit",
     "objc2-quartz-core",
@@ -154,6 +156,8 @@ objc2 = { version = "0.6", optional = true }
 objc2-metal = { version = "0.3", optional = true }
 objc2-metal-kit = { version = "0.3", optional = true }
 objc2-quartz-core = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
 #TODO: replace with "objc2"
 metal.workspace = true
 

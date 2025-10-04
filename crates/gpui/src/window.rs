@@ -1272,14 +1272,20 @@ impl Window {
 // macOS-only helpers to host native NSView subviews for custom renderers.
 #[cfg(target_os = "macos")]
 impl Window {
+    /// Create a native NSView subview attached to the window for hosting custom renderers.
+    /// Returns an opaque pointer to the created NSView (or null on failure).
     pub fn create_native_subview(&self, frame: Bounds<Pixels>) -> *mut std::ffi::c_void {
         use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
         use raw_window_handle as rwh;
+        // macros/constants from objc
+        use objc::{class, msg_send, sel, sel_impl};
+        use objc::runtime::YES;
         unsafe {
-            let handle = self.window_handle().unwrap();
+            // Disambiguate trait method versus inherent method with the same name.
+            let handle = <Self as rwh::HasWindowHandle>::window_handle(self).unwrap();
             match handle.as_raw() {
                 rwh::RawWindowHandle::AppKit(h) => {
-                    let parent: id = h.ns_view as id;
+                    let parent: id = h.ns_view.as_ptr() as id;
                     let alloc: id = msg_send![class!(NSView), alloc];
                     let rect = NSRect::new(
                         NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
@@ -1295,10 +1301,13 @@ impl Window {
         }
     }
 
+    /// Update the frame of a previously created native subview.
     pub fn set_native_subview_frame(&self, subview: *mut std::ffi::c_void, frame: Bounds<Pixels>) {
         use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
         unsafe {
             if subview.is_null() { return; }
+            // objc macros
+            use objc::{msg_send, sel, sel_impl};
             let view: id = subview as id;
             let rect = NSRect::new(
                 NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
@@ -1308,10 +1317,13 @@ impl Window {
         }
     }
 
+    /// Remove a previously created native subview from the window.
     pub fn remove_native_subview(&self, subview: *mut std::ffi::c_void) {
         use cocoa::{appkit::NSView, base::id};
         unsafe {
             if subview.is_null() { return; }
+            // objc macros
+            use objc::{msg_send, sel, sel_impl};
             let view: id = subview as id;
             let _: () = msg_send![view, removeFromSuperview];
         }

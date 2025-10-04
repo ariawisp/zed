@@ -1032,20 +1032,19 @@ impl TerminalView {
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
 
-        self.terminal.update(cx, |term, cx| {
-            let handled = term.try_keystroke(
-                &event.keystroke,
-                TerminalSettings::get_global(cx).option_as_meta,
-            );
+        let opt_meta = TerminalSettings::get_global(cx).option_as_meta;
+        self.terminal.update(cx, |term, cx2| {
+            let handled = term.try_keystroke(&event.keystroke, opt_meta);
             if handled {
-                cx.stop_propagation();
+                cx2.stop_propagation();
             }
         });
     }
 
     fn key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let opt_meta = TerminalSettings::get_global(cx).option_as_meta;
         self.terminal.update(cx, |term, _| {
-            term.key_up(&event.keystroke, TerminalSettings::get_global(cx).option_as_meta);
+            term.key_up(&event.keystroke, opt_meta);
         });
     }
 

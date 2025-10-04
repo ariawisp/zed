@@ -2209,6 +2209,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -2328,7 +2330,7 @@ dependencies = [
  "mint",
  "naga",
  "objc2",
- "objc2-app-kit",
+ "objc2-app-kit 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-metal",
@@ -2391,8 +2393,7 @@ dependencies = [
 [[package]]
 name = "block2"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "340d2f0bdb2a43c1d3cd40513185b2bd7def0aa1052f956455114bc98f82dcf2"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "objc2",
 ]
@@ -4931,8 +4932,7 @@ checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
 [[package]]
 name = "dispatch2"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89a09f22a6c6069a18470eb92d2298acf25463f14256d24778e1230d789a2aec"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "bitflags 2.9.0",
  "objc2",
@@ -7079,7 +7079,11 @@ dependencies = [
  "num_cpus",
  "objc",
  "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
  "objc2-metal",
+ "objc2-metal-kit",
+ "objc2-quartz-core",
  "oo7",
  "open",
  "parking",
@@ -8952,6 +8956,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "libghostty"
+version = "0.1.0"
+dependencies = [
+ "libghostty-sys",
+]
+
+[[package]]
+name = "libghostty-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.70.1",
+ "pkg-config",
+]
+
+[[package]]
 name = "libgit2-sys"
 version = "0.18.1+1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10443,9 +10462,8 @@ dependencies = [
 
 [[package]]
 name = "objc2"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88c6597e14493ab2e44ce58f2fdecf095a51f12ca57bec060a11c57332520551"
+version = "0.6.2"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "objc2-encode",
 ]
@@ -10461,6 +10479,16 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-quartz-core",
+]
+
+[[package]]
+name = "objc2-app-kit"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "bitflags 2.9.0",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -10503,25 +10531,60 @@ dependencies = [
 [[package]]
 name = "objc2-core-foundation"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c10c2894a6fed806ade6027bcd50662746363a9589d3ec9d9bef30a4e4bc166"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "bitflags 2.9.0",
+ "block2",
+ "dispatch2",
+ "libc",
+ "objc2",
+]
+
+[[package]]
+name = "objc2-core-graphics"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "bitflags 2.9.0",
  "dispatch2",
  "objc2",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+]
+
+[[package]]
+name = "objc2-core-video"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "bitflags 2.9.0",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-io-surface",
 ]
 
 [[package]]
 name = "objc2-encode"
 version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 
 [[package]]
 name = "objc2-foundation"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "900831247d2fe1a09a683278e5384cfb8c80c79fe6b166f9d14bfdde0ea1b03c"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "bitflags 2.9.0",
+ "block2",
+ "libc",
+ "objc2",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-io-surface"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "bitflags 2.9.0",
  "objc2",
@@ -10531,8 +10594,7 @@ dependencies = [
 [[package]]
 name = "objc2-metal"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f246c183239540aab1782457b35ab2040d4259175bd1d0c58e46ada7b47a874"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "bitflags 2.9.0",
  "block2",
@@ -10543,14 +10605,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-metal-kit"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-app-kit 0.3.1 (git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe)",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "objc2-metal",
+ "objc2-model-io",
+ "objc2-quartz-core",
+]
+
+[[package]]
+name = "objc2-model-io"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-quartz-core"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90ffb6a0cd5f182dc964334388560b12a57f7b74b3e2dec5e2722aa2dfb2ccd5"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
 dependencies = [
  "bitflags 2.9.0",
+ "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-video",
  "objc2-foundation",
  "objc2-metal",
 ]
@@ -16102,6 +16192,7 @@ dependencies = [
  "gpui",
  "itertools 0.14.0",
  "libc",
+ "libghostty",
  "log",
  "rand 0.9.1",
  "regex",
@@ -20888,3 +20979,13 @@ dependencies = [
  "syn 2.0.101",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "objc2-metal-performance-shaders"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"
+
+[[patch.unused]]
+name = "objc2-metal-performance-shaders-graph"
+version = "0.3.1"
+source = "git+https://github.com/madsmtm/objc2?rev=325ff167465d74f0d5187b4b1b8b231d2be21efe#325ff167465d74f0d5187b4b1b8b231d2be21efe"

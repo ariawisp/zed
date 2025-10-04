@@ -535,11 +535,9 @@ impl TerminalBuilder {
             }
         };
 
-        #[cfg(not(feature = "ghostty-backend"))]
         let pty_info = PtyProcessInfo::new(&pty);
 
         //And connect them together
-        #[cfg(not(feature = "ghostty-backend"))]
         let event_loop = EventLoop::new(
             term.clone(),
             ZedListener(events_tx),
@@ -550,21 +548,16 @@ impl TerminalBuilder {
         .context("failed to create event loop")?;
 
         //Kick things off
-        #[cfg(not(feature = "ghostty-backend"))]
         let pty_tx = event_loop.channel();
-        #[cfg(not(feature = "ghostty-backend"))]
         let _io_thread = event_loop.spawn(); // DANGER
 
         let no_task = task.is_none();
 
         let mut terminal = Terminal {
             task,
-            #[cfg(not(feature = "ghostty-backend"))]
             pty_tx: Notifier(pty_tx),
             completion_tx,
-            #[cfg(not(feature = "ghostty-backend"))]
             term,
-            #[cfg(not(feature = "ghostty-backend"))]
             term_config: config,
             title_override: terminal_title_override,
             events: VecDeque::with_capacity(10), //Should never get this high.
@@ -572,6 +565,7 @@ impl TerminalBuilder {
             last_mouse: None,
             matches: Vec::new(),
             selection_head: None,
+            #[cfg(not(feature = "ghostty-backend"))]
             pty_info,
             breadcrumb_text: String::new(),
             scroll_px: px(0.),
@@ -592,7 +586,7 @@ impl TerminalBuilder {
                 cursor_shape,
                 alternate_scroll,
                 max_scroll_history_lines,
-                window_id,
+            window_id,
             },
             child_exited: None,
             #[cfg(feature = "ghostty-backend")]
@@ -680,55 +674,7 @@ impl TerminalBuilder {
         self.terminal
     }
 
-    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
-    pub fn attach_renderer(&mut self, nsview: *mut c_void, content_scale: f64, cx: &mut Context<Self>) {
-        if self.ghostty.is_some() { return; }
-        // Estimate cols/rows from last_content or default
-        let bounds = self.last_content.terminal_bounds;
-        let (cols, rows) = if bounds.cell_size.width.0 > 0.0 && bounds.cell_size.height.0 > 0.0 {
-            let cols = (bounds.size.width.0 / bounds.cell_size.width.0).max(1.0) as u16;
-            let rows = (bounds.size.height.0 / bounds.cell_size.height.0).max(1.0) as u16;
-            (cols, rows)
-        } else { (80, 24) };
-        let mut backend = GhosttyBackend::new(rows, cols).expect("ghostty backend init failed");
-        // Build argv and cwd from template
-        let argv: Vec<String> = match &self.template.shell {
-            Shell::System => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
-            Shell::Program(p) => vec![p.clone()],
-            Shell::WithArguments { program, args, .. } => {
-                let mut v = vec![program.clone()]; v.extend(args.clone()); v
-            }
-        };
-        let argv_c: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
-        let cwd = self.working_directory();
-        backend.spawn_shell(&argv_c, cwd.as_deref()).expect("ghostty spawn shell failed");
-        backend.attach_renderer(nsview, content_scale).expect("ghostty attach renderer failed");
-        let fd = backend.pty_fd();
-        // Spawn background IO loop to feed VT and refresh
-        cx.background_spawn(async move |terminal, _cx| {
-            // Duplicate fd so closing File doesn't close the original
-            let fd2 = unsafe { libc::dup(fd) };
-            if fd2 < 0 { return anyhow::Ok(()); }
-            let mut file = unsafe { std::fs::File::from_raw_fd(fd2) };
-            let mut buf = vec![0u8; 8192];
-            loop {
-                match file.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        terminal.update(|t, _| {
-                            if let Some(b) = t.ghostty.as_mut() {
-                                b.feed(&buf[..n]);
-                                b.refresh();
-                            }
-                        });
-                    }
-                    Err(_) => break,
-                }
-            }
-            anyhow::Ok(())
-        }).detach();
-        self.ghostty = Some(backend);
-    }
+    
 
     #[cfg(windows)]
     fn resolve_path(path: &str) -> Result<String> {
@@ -815,12 +761,9 @@ pub enum SelectionPhase {
 }
 
 pub struct Terminal {
-    #[cfg(not(feature = "ghostty-backend"))]
     pty_tx: Notifier,
     completion_tx: Option<Sender<Option<ExitStatus>>>,
-    #[cfg(not(feature = "ghostty-backend"))]
     term: Arc<FairMutex<Term<ZedListener>>>,
-    #[cfg(not(feature = "ghostty-backend"))]
     term_config: Config,
     events: VecDeque<InternalEvent>,
     /// This is only used for mouse mode cell change detection
@@ -892,6 +835,53 @@ impl TaskStatus {
 }
 
 impl Terminal {
+    #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
+    pub fn attach_renderer(&mut self, nsview: *mut c_void, content_scale: f64, cx: &mut Context<Terminal>) {
+        if self.ghostty.is_some() { return; }
+        let bounds = self.last_content.terminal_bounds;
+        let (cols, rows) = if f32::from(bounds.cell_width()) > 0.0 && f32::from(bounds.line_height()) > 0.0 {
+            let cols = (f32::from(bounds.width()) / f32::from(bounds.cell_width())).max(1.0) as u16;
+            let rows = (f32::from(bounds.height()) / f32::from(bounds.line_height())).max(1.0) as u16;
+            (cols, rows)
+        } else { (80, 24) };
+        let mut backend = GhosttyBackend::new(rows, cols).expect("ghostty backend init failed");
+        // Build argv and cwd from template
+        let argv: Vec<String> = match &self.template.shell {
+            Shell::System => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())],
+            Shell::Program(p) => vec![p.clone()],
+            Shell::WithArguments { program, args, .. } => {
+                let mut v = vec![program.clone()]; v.extend(args.clone()); v
+            }
+        };
+        let argv_c: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+        let cwd = self.working_directory();
+        backend.spawn_shell(&argv_c, cwd.as_deref().and_then(|p| p.to_str())).expect("ghostty spawn shell failed");
+        backend.attach_renderer(nsview, content_scale).expect("ghostty attach renderer failed");
+        let fd = backend.pty_fd();
+        use std::os::fd::FromRawFd;
+        cx.background_spawn(async move |terminal, _cx| {
+            let fd2 = unsafe { libc::dup(fd) };
+            if fd2 < 0 { return anyhow::Ok(()) };
+            let mut file = unsafe { std::fs::File::from_raw_fd(fd2) };
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        terminal.update(|t: &mut Terminal, _| {
+                            if let Some(b) = t.ghostty.as_mut() {
+                                b.feed(&buf[..n]);
+                                b.refresh();
+                            }
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
+            anyhow::Ok(())
+        }).detach();
+        self.ghostty = Some(backend);
+    }
     fn process_event(&mut self, event: AlacTermEvent, cx: &mut Context<Self>) {
         match event {
             AlacTermEvent::Title(title) => {
@@ -947,7 +937,7 @@ impl Terminal {
             }
             AlacTermEvent::Wakeup => {
                 cx.emit(Event::Wakeup);
-
+                #[cfg(not(feature = "ghostty-backend"))]
                 if self.pty_info.has_changed() {
                     cx.emit(Event::TitleChanged);
                 }
@@ -961,7 +951,10 @@ impl Terminal {
                 // Instead of locking, we could store the colors in `self.last_content`. But then
                 // we might respond with out of date value if a "set color" sequence is immediately
                 // followed by a color request sequence.
-                let color = self.term.lock().colors()[index]
+                let color = self
+                    .term
+                    .lock()
+                    .colors()[index]
                     .unwrap_or_else(|| to_alac_rgb(get_color_at_index(index, cx.theme().as_ref())));
                 self.write_to_pty(format(color).into_bytes());
             }
@@ -1565,19 +1558,22 @@ impl Terminal {
 
     #[cfg(feature = "ghostty-backend")]
     pub fn key_up(&mut self, keystroke: &Keystroke, alt_is_meta: bool) {
-        if let Some(bytes) = self.encode_keystroke_action_via_ghostty(keystroke, alt_is_meta, libghostty_sys::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) {
+        if let Some(bytes) = self.encode_keystroke_action_via_ghostty(keystroke, alt_is_meta, false) {
             self.input(bytes);
         }
     }
 
+    #[cfg(not(feature = "ghostty-backend"))]
+    pub fn key_up(&mut self, _keystroke: &Keystroke, _alt_is_meta: bool) {}
+
     #[cfg(feature = "ghostty-backend")]
     fn encode_keystroke_via_ghostty(&self, ks: &Keystroke, alt_is_meta: bool) -> Option<Vec<u8>> {
-        self.encode_keystroke_action_via_ghostty(ks, alt_is_meta, libghostty_sys::ghostty_input_action_e::GHOSTTY_ACTION_PRESS)
+        self.encode_keystroke_action_via_ghostty(ks, alt_is_meta, true)
     }
 
     #[cfg(feature = "ghostty-backend")]
-    fn encode_keystroke_action_via_ghostty(&self, ks: &Keystroke, alt_is_meta: bool, action: libghostty_sys::ghostty_input_action_e) -> Option<Vec<u8>> {
-        use libghostty_sys as sys;
+    fn encode_keystroke_action_via_ghostty(&self, ks: &Keystroke, alt_is_meta: bool, pressed: bool) -> Option<Vec<u8>> {
+        use libghostty::input as ginput;
         let b = self.ghostty.as_ref()?;
         // Prefer the actual typed character when available; fall back to key if single-char
         let mut text_opt: Option<std::ffi::CString> = None;
@@ -1595,9 +1591,11 @@ impl Terminal {
             mods_bits &= !(1 << 2);
             mods_bits |= 1 << 3;
         }
-        let mods_enum: sys::ghostty_input_mods_e = unsafe { std::mem::transmute(mods_bits) };
-        let native_keycode = mac_native_keycode_for_name(ks.key.as_str());
-        let mut ev = sys::ghostty_input_key_s {
+        let mods_enum: ginput::Mods = unsafe { std::mem::transmute(mods_bits) };
+        let native_keycode = Self::mac_native_keycode_for_name(ks.key.as_str());
+        // ghostty_input_action_e per ghostty.h: RELEASE=0, PRESS=1, REPEAT=2
+        let action: ginput::Action = unsafe { std::mem::transmute(if pressed { 1u32 } else { 0u32 }) };
+        let mut ev = ginput::KeyEvent {
             action,
             mods: mods_enum,
             consumed_mods: unsafe { std::mem::transmute(0u32) },
@@ -2221,12 +2219,16 @@ impl Terminal {
     ///
     /// This does *not* return the working directory of the shell that runs on the
     /// remote host, in case Zed is connected to a remote host.
+    #[cfg(not(feature = "ghostty-backend"))]
     fn client_side_working_directory(&self) -> Option<PathBuf> {
         self.pty_info
             .current
             .as_ref()
             .map(|process| process.cwd.clone())
     }
+
+    #[cfg(feature = "ghostty-backend")]
+    fn client_side_working_directory(&self) -> Option<PathBuf> { None }
 
     pub fn title(&self, truncate: bool) -> String {
         const MAX_CHARS: usize = 25;
@@ -2243,37 +2245,44 @@ impl Terminal {
                 .as_ref()
                 .map(|title_override| title_override.to_string())
                 .unwrap_or_else(|| {
-                    self.pty_info
-                        .current
-                        .as_ref()
-                        .map(|fpi| {
-                            let process_file = fpi
-                                .cwd
-                                .file_name()
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default();
+                    #[cfg(not(feature = "ghostty-backend"))]
+                    {
+                        self.pty_info
+                            .current
+                            .as_ref()
+                            .map(|fpi| {
+                                let process_file = fpi
+                                    .cwd
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
 
-                            let argv = fpi.argv.as_slice();
-                            let process_name = format!(
-                                "{}{}",
-                                fpi.name,
-                                if !argv.is_empty() {
-                                    format!(" {}", (argv[1..]).join(" "))
+                                let argv = fpi.argv.as_slice();
+                                let process_name = format!(
+                                    "{}{}",
+                                    fpi.name,
+                                    if !argv.is_empty() {
+                                        format!(" {}", (argv[1..]).join(" "))
+                                    } else {
+                                        "".to_string()
+                                    }
+                                );
+                                let (process_file, process_name) = if truncate {
+                                    (
+                                        truncate_and_trailoff(&process_file, MAX_CHARS),
+                                        truncate_and_trailoff(&process_name, MAX_CHARS),
+                                    )
                                 } else {
-                                    "".to_string()
-                                }
-                            );
-                            let (process_file, process_name) = if truncate {
-                                (
-                                    truncate_and_trailoff(&process_file, MAX_CHARS),
-                                    truncate_and_trailoff(&process_name, MAX_CHARS),
-                                )
-                            } else {
-                                (process_file, process_name)
-                            };
-                            format!("{process_file} — {process_name}")
-                        })
-                        .unwrap_or_else(|| "Terminal".to_string())
+                                    (process_file, process_name)
+                                };
+                                format!("{process_file} — {process_name}")
+                            })
+                            .unwrap_or_else(|| "Terminal".to_string())
+                    }
+                    #[cfg(feature = "ghostty-backend")]
+                    {
+                        "Terminal".to_string()
+                    }
                 }),
         }
     }
@@ -2282,6 +2291,7 @@ impl Terminal {
         if let Some(task) = self.task()
             && task.status == TaskStatus::Running
         {
+            #[cfg(not(feature = "ghostty-backend"))]
             self.pty_info.kill_current_process();
         }
     }
