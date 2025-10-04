@@ -867,7 +867,7 @@ impl Terminal {
                 match file.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        terminal.update(_cx, |t, _| {
+                        let _ = terminal.update(_cx, |t, _| {
                             if let Some(b) = t.ghostty.as_mut() {
                                 b.feed(&buf[..n]);
                                 b.refresh();
