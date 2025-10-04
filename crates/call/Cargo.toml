@@ -21,10 +21,11 @@ test-support = [
     "project/test-support",
     "util/test-support"
 ]
+rtc = ["dep:audio", "dep:livekit_client"]
 
 [dependencies]
 anyhow.workspace = true
-audio.workspace = true
+audio = { workspace = true, optional = true }
 client.workspace = true
 collections.workspace = true
 fs.workspace = true
@@ -40,7 +41,7 @@ settings.workspace = true
 telemetry.workspace = true
 util.workspace = true
 gpui_tokio.workspace = true
-livekit_client.workspace = true
+livekit_client = { workspace = true, optional = true }
 workspace-hack.workspace = true
 
 [dev-dependencies]

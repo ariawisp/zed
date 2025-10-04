@@ -10,6 +10,11 @@ authors = ["Zed Team <hi@zed.dev>"]
 [lints]
 workspace = true
 
+[features]
+default = []
+# Enable real-time calling (LiveKit/WebRTC) integration
+rtc = ["dep:audio", "dep:call"]
+
 [[bin]]
 name = "zed"
 path = "src/zed-main.rs"
@@ -27,13 +32,13 @@ agent_ui.workspace = true
 anyhow.workspace = true
 assets.workspace = true
 assistant_tools.workspace = true
-audio.workspace = true
+audio = { workspace = true, optional = true }
 auto_update.workspace = true
 auto_update_ui.workspace = true
 backtrace = "0.3"
 bincode.workspace = true
 breadcrumbs.workspace = true
-call.workspace = true
+call = { workspace = true, optional = true }
 channel.workspace = true
 clap.workspace = true
 cli.workspace = true

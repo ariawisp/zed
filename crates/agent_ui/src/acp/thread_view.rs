@@ -11,6 +11,7 @@ use agent_settings::{AgentProfileId, AgentSettings, CompletionMode};
 use agent2::{DbThreadMetadata, HistoryEntry, HistoryEntryId, HistoryStore, NativeAgentServer};
 use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
+#[cfg(feature = "rtc")]
 use audio::{Audio, Sound};
 use buffer_diff::BufferDiff;
 use client::zed_urls;
@@ -4506,7 +4507,10 @@ impl AcpThreadView {
     fn play_notification_sound(&self, window: &Window, cx: &mut App) {
         let settings = AgentSettings::get_global(cx);
         if settings.play_sound_when_agent_done && !window.is_window_active() {
-            Audio::play_sound(Sound::AgentDone, cx);
+            #[cfg(feature = "rtc")]
+            {
+                Audio::play_sound(Sound::AgentDone, cx);
+            }
         }
     }
 

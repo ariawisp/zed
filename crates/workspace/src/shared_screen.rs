@@ -1,20 +1,27 @@
+#![allow(dead_code)]
+
+#[cfg(feature = "rtc")]
 use crate::{
     ItemNavHistory, WorkspaceId,
     item::{Item, ItemEvent},
 };
-use call::{RemoteVideoTrack, RemoteVideoTrackView, Room};
+#[cfg(feature = "rtc")]
+use call::{RemoteVideoTrack, RemoteVideoTrackView, Room, RemoteVideoTrackViewEvent, room};
+#[cfg(feature = "rtc")]
 use client::{User, proto::PeerId};
 use gpui::{
     AppContext as _, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     ParentElement, Render, SharedString, Styled, div,
 };
+#[cfg(feature = "rtc")]
 use std::sync::Arc;
 use ui::{Icon, IconName, prelude::*};
+#[cfg(not(feature = "rtc"))]
+use crate::Item;
 
-pub enum Event {
-    Close,
-}
+pub enum Event { Close }
 
+#[cfg(feature = "rtc")]
 pub struct SharedScreen {
     pub peer_id: PeerId,
     user: Arc<User>,
@@ -23,6 +30,10 @@ pub struct SharedScreen {
     focus: FocusHandle,
 }
 
+#[cfg(not(feature = "rtc"))]
+pub struct SharedScreen { pub peer_id: u64, focus: FocusHandle }
+
+#[cfg(feature = "rtc")]
 impl SharedScreen {
     pub fn new(
         track: RemoteVideoTrack,
@@ -64,6 +75,7 @@ impl Focusable for SharedScreen {
         self.focus.clone()
     }
 }
+#[cfg(feature = "rtc")]
 impl Render for SharedScreen {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -75,6 +87,7 @@ impl Render for SharedScreen {
     }
 }
 
+#[cfg(feature = "rtc")]
 impl Item for SharedScreen {
     type Event = Event;
 
@@ -115,18 +128,44 @@ impl Item for SharedScreen {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<Self>> {
-        Some(cx.new(|cx| Self {
-            view: self.view.update(cx, |view, cx| view.clone(window, cx)),
-            peer_id: self.peer_id,
-            user: self.user.clone(),
-            nav_history: Default::default(),
-            focus: cx.focus_handle(),
-        }))
+        #[cfg(feature = "rtc")]
+        {
+            return Some(cx.new(|cx| Self {
+                view: self.view.update(cx, |view, cx| view.clone(window, cx)),
+                peer_id: self.peer_id,
+                user: self.user.clone(),
+                nav_history: Default::default(),
+                focus: cx.focus_handle(),
+            }));
+        }
+        #[cfg(not(feature = "rtc"))]
+        {
+            return Some(cx.new(|cx| Self { peer_id: self.peer_id, focus: cx.focus_handle() }));
+        }
     }
 
     fn to_item_events(event: &Self::Event, mut f: impl FnMut(ItemEvent)) {
         match event {
             Event::Close => f(ItemEvent::CloseItem),
         }
+    }
+}
+
+#[cfg(not(feature = "rtc"))]
+impl Render for SharedScreen {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .bg(cx.theme().colors().editor_background)
+            .track_focus(&self.focus)
+            .key_context("SharedScreen")
+            .size_full()
+    }
+}
+
+#[cfg(not(feature = "rtc"))]
+impl Item for SharedScreen {
+    type Event = Event;
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Shared Screen".into()
     }
 }

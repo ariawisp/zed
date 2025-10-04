@@ -13,6 +13,7 @@ use agent_ui::{AgentDiffToolbar, AgentPanelDelegate};
 use anyhow::Context as _;
 pub use app_menus::*;
 use assets::Assets;
+#[cfg(feature = "rtc")]
 use audio::{AudioSettings, REPLAY_DURATION};
 use breadcrumbs::Breadcrumbs;
 use client::zed_urls;
@@ -1896,6 +1897,7 @@ fn open_settings_file(
     .detach_and_log_err(cx);
 }
 
+#[cfg(feature = "rtc")]
 fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     struct CaptureRecentAudioNotification {
         focus_handle: gpui::FocusHandle,
@@ -1972,6 +1974,11 @@ fn capture_recent_audio(workspace: &mut Workspace, _: &mut Window, cx: &mut Cont
         cx,
         |cx| cx.new(CaptureRecentAudioNotification::new),
     );
+}
+
+#[cfg(not(feature = "rtc"))]
+fn capture_recent_audio(_workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
+    // RTC/audio disabled in this build; no-op action handler.
 }
 
 #[cfg(test)]
@@ -4677,9 +4684,15 @@ mod tests {
             gpui_tokio::init(cx);
             vim_mode_setting::init(cx);
             theme::init(theme::LoadThemes::JustBase, cx);
-            audio::init(cx);
+            #[cfg(feature = "rtc")]
+            {
+                audio::init(cx);
+            }
             channel::init(&app_state.client, app_state.user_store.clone(), cx);
-            call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            #[cfg(feature = "rtc")]
+            {
+                call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            }
             notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
             workspace::init(app_state.clone(), cx);
             Project::init_settings(cx);

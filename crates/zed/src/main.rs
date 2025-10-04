@@ -580,7 +580,10 @@ pub fn main() {
         repl::notebook::init(cx);
         diagnostics::init(cx);
 
-        audio::init(cx);
+        #[cfg(feature = "rtc")]
+        {
+            audio::init(cx);
+        }
         workspace::init(app_state.clone(), cx);
         ui_prompt::init(cx);
 
@@ -604,7 +607,10 @@ pub fn main() {
         theme_selector::init(cx);
         settings_profile_selector::init(cx);
         language_tools::init(cx);
-        call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+        #[cfg(feature = "rtc")]
+        {
+            call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+        }
         notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         collab_ui::init(&app_state, cx);
         git_ui::init(cx);

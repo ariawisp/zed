@@ -1383,9 +1383,12 @@ impl Workspace {
         let session_id = app_state.session.read(cx).id().to_owned();
 
         let mut active_call = None;
-        if let Some(call) = ActiveCall::try_global(cx) {
-            let subscriptions = vec![cx.subscribe_in(&call, window, Self::on_active_call_event)];
-            active_call = Some((call, subscriptions));
+        #[cfg(feature = "rtc")]
+        {
+            if let Some(call) = ActiveCall::try_global(cx) {
+                let subscriptions = vec![cx.subscribe_in(&call, window, Self::on_active_call_event)];
+                active_call = Some((call, subscriptions));
+            }
         }
 
         let (serializable_items_tx, serializable_items_rx) =
@@ -4951,6 +4954,7 @@ impl Workspace {
         })
     }
 
+    #[cfg(feature = "rtc")]
     fn leader_updated(
         &mut self,
         leader_id: impl Into<CollaboratorId>,
@@ -5010,6 +5014,38 @@ impl Workspace {
         )
     }
 
+    #[cfg(not(feature = "rtc"))]
+    fn leader_updated(
+        &mut self,
+        _leader_id: impl Into<CollaboratorId>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Box<dyn ItemHandle>> {
+        None
+    }
+
+    #[cfg(not(feature = "rtc"))]
+    fn active_item_for_peer(
+        &self,
+        _peer_id: PeerId,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<(Option<PanelId>, Box<dyn ItemHandle>)> {
+        None
+    }
+
+    #[cfg(not(feature = "rtc"))]
+    fn shared_screen_for_peer(
+        &self,
+        _peer_id: PeerId,
+        _pane: &Entity<Pane>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Entity<SharedScreen>> {
+        None
+    }
+
+    #[cfg(feature = "rtc")]
     fn active_item_for_peer(
         &self,
         peer_id: PeerId,
@@ -5051,6 +5087,7 @@ impl Workspace {
         item_to_activate
     }
 
+    #[cfg(feature = "rtc")]
     fn shared_screen_for_peer(
         &self,
         peer_id: PeerId,
@@ -6048,6 +6085,7 @@ fn leader_border_for_pane(
         }
     })?;
 
+    #[cfg(feature = "rtc")]
     let mut leader_color = match leader_id {
         CollaboratorId::PeerId(leader_peer_id) => {
             let room = ActiveCall::try_global(cx)?.read(cx).room()?.read(cx);
@@ -6059,6 +6097,11 @@ fn leader_border_for_pane(
                 .cursor
         }
         CollaboratorId::Agent => cx.theme().players().agent().cursor,
+    };
+    #[cfg(not(feature = "rtc"))]
+    let mut leader_color = match leader_id {
+        CollaboratorId::Agent => cx.theme().players().agent().cursor,
+        _ => return None,
     };
     leader_color.fade_out(0.3);
     Some(
@@ -6916,6 +6959,7 @@ actions!(
     ]
 );
 
+#[cfg(feature = "rtc")]
 async fn join_channel_internal(
     channel_id: ChannelId,
     app_state: &Arc<AppState>,
@@ -7062,6 +7106,17 @@ async fn join_channel_internal(
         return anyhow::Ok(true);
     }
     anyhow::Ok(false)
+}
+
+#[cfg(not(feature = "rtc"))]
+async fn join_channel_internal(
+    _channel_id: ChannelId,
+    _app_state: &Arc<AppState>,
+    _requesting_window: Option<WindowHandle<Workspace>>,
+    _active_call: &Entity<ActiveCall>,
+    _cx: &mut AsyncApp,
+ ) -> Result<bool> {
+    Ok(false)
 }
 
 pub fn join_channel(
@@ -7567,6 +7622,7 @@ fn serialize_remote_project(
     })
 }
 
+#[cfg(feature = "rtc")]
 pub fn join_in_room_project(
     project_id: u64,
     follow_user_id: u64,
@@ -7651,6 +7707,16 @@ pub fn join_in_room_project(
 
         anyhow::Ok(())
     })
+}
+
+#[cfg(not(feature = "rtc"))]
+pub fn join_in_room_project(
+    _project_id: u64,
+    _follow_user_id: u64,
+    _app_state: Arc<AppState>,
+    _cx: &mut App,
+) -> Task<Result<()> > {
+    Task::ready(Ok(()))
 }
 
 pub fn reload(cx: &mut App) {
