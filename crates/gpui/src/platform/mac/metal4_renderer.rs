@@ -308,14 +308,19 @@ impl Metal4Renderer {
         unsafe {
             let bytes = unit_vertices.as_ptr() as *const c_void;
             let len = core::mem::size_of_val(&unit_vertices);
-            let buf = device.newBufferWithBytes_length_options(bytes, len, 0);
+            let ptr = std::ptr::NonNull::new(bytes as *mut c_void).expect("non-null vertices");
+            let buf = device
+                .newBufferWithBytes_length_options(ptr, len, objc2_metal::MTLResourceOptions(0))
+                .expect("create MTLBuffer");
             Retained::as_ptr(&buf) as *mut Object
         }
     }
 
     fn create_small_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>, size: usize) -> *mut Object {
         unsafe {
-            let buf = device.newBufferWithLength_options(size, 0);
+            let buf = device
+                .newBufferWithLength_options(size, objc2_metal::MTLResourceOptions(0))
+                .expect("create MTLBuffer");
             Retained::as_ptr(&buf) as *mut Object
         }
     }
@@ -605,7 +610,8 @@ impl Metal4Renderer {
             let pass_desc = MTLRenderPassDescriptor::new();
             let color0 = pass_desc.colorAttachments().objectAtIndexedSubscript(0);
             // Texture is an Objective-C object; cast to typed ProtocolObject<dyn MTLTexture>
-            unsafe { color0.setTexture(Some(&*(texture as *mut objc2_metal::MTLTexture))); }
+            let tex_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = unsafe { &*(texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>) };
+            color0.setTexture(Some(tex_ref));
             color0.setLoadAction(MTLLoadAction::Clear);
             color0.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
             color0.setStoreAction(MTLStoreAction::Store);
@@ -617,7 +623,7 @@ impl Metal4Renderer {
             let label = NSString::from_str(&format!("GPUI frame {}", self.frame_number));
             let _: () = msg_send![command_buffer, setLabel: label];
 
-            let encoder: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_ptr];
+            let mut encoder: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_ptr];
             if !encoder.is_null() {
                 // Set viewport to drawable size
                 #[repr(C)]
@@ -640,7 +646,12 @@ impl Metal4Renderer {
                 #[inline]
                 unsafe fn align_offset(off: &mut usize) { *off = (*off + 255) & !255; }
                 #[inline]
-                unsafe fn upload_slice<T: Copy>(buf: *mut Object, off: usize, slice: &[T]) { let dst = (msg_send![buf, contents] as *mut u8).add(off); ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, dst, mem::size_of_val(slice)); }
+                unsafe fn upload_slice<T>(buf: *mut Object, off: usize, slice: &[T]) {
+                    let contents: *mut c_void = msg_send![buf, contents];
+                    let dst = (contents as *mut u8).add(off);
+                    // Copy raw bytes from the typed slice
+                    ptr::copy_nonoverlapping::<u8>(slice.as_ptr() as *const u8, dst, mem::size_of_val(slice));
+                }
 
                 // Viewport size in shared buffer for argument table
                 let viewport_size = Size { width: DevicePixels(size.width as i32), height: DevicePixels(size.height as i32) };
@@ -685,11 +696,14 @@ impl Metal4Renderer {
                                 let rp = MTLRenderPassDescriptor::new();
                                 let att = rp.colorAttachments().objectAtIndexedSubscript(0);
                                 if !self.path_intermediate_msaa_texture.is_null() {
-                                    att.setTexture(Some(&*(self.path_intermediate_msaa_texture as *mut objc2_metal::MTLTexture)));
-                                    att.setResolveTexture(Some(&*(self.path_intermediate_texture as *mut objc2_metal::MTLTexture)));
+                                    let msaa_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_msaa_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                    att.setTexture(Some(msaa_ref));
+                                    let resolve_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                    att.setResolveTexture(Some(resolve_ref));
                                     att.setStoreAction(MTLStoreAction::MultisampleResolve);
                                 } else {
-                                    att.setTexture(Some(&*(self.path_intermediate_texture as *mut objc2_metal::MTLTexture)));
+                                    let tex_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                    att.setTexture(Some(tex_ref));
                                     att.setStoreAction(MTLStoreAction::Store);
                                 }
                                 att.setLoadAction(MTLLoadAction::Clear);
@@ -732,7 +746,8 @@ impl Metal4Renderer {
                             let _: () = msg_send![encoder, endEncoding];
                             let pass_desc2 = MTLRenderPassDescriptor::new();
                             let color02 = pass_desc2.colorAttachments().objectAtIndexedSubscript(0);
-                            unsafe { color02.setTexture(Some(&*(texture as *mut objc2_metal::MTLTexture))); }
+                            let tex_ref2: &ProtocolObject<dyn objc2_metal::MTLTexture> = unsafe { &*(texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>) };
+                            color02.setTexture(Some(tex_ref2));
                             color02.setLoadAction(MTLLoadAction::Load);
                             color02.setStoreAction(MTLStoreAction::Store);
                             encoder = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&pass_desc2) as *mut Object];
@@ -801,7 +816,7 @@ impl Metal4Renderer {
                             let inst_addr = inst_base + instance_offset as u64;
                             let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
                             // Atlas texture + size
-                            let tex_ref = self.atlas.texture(*texture_id);
+                            let tex_ref = self.atlas.texture(texture_id);
                             let tex_ptr = tex_ref.ptr();
                             let tex_size = Size { width: DevicePixels(tex_ref.width() as i32), height: DevicePixels(tex_ref.height() as i32) };
                             upload_slice(self.atlas_size_buffer, 0, std::slice::from_ref(&tex_size));
@@ -835,7 +850,7 @@ impl Metal4Renderer {
                                     let _r1 = CVMetalTextureCacheCreateTextureFromImage(
                                         kCFAllocatorDefault as _,
                                         self.cv_texture_cache,
-                                        src as *const _,
+                                        src as *mut _,
                                         core::ptr::null(),
                                         pf_y,
                                         surface.image_buffer.get_width_of_plane(0),
@@ -847,7 +862,7 @@ impl Metal4Renderer {
                                     let _r2 = CVMetalTextureCacheCreateTextureFromImage(
                                         kCFAllocatorDefault as _,
                                         self.cv_texture_cache,
-                                        src as *const _,
+                                        src as *mut _,
                                         core::ptr::null(),
                                         pf_cbcr,
                                         surface.image_buffer.get_width_of_plane(1),
@@ -872,7 +887,8 @@ impl Metal4Renderer {
                                     let _: () = msg_send![self.argument_table, setTexture: cbcr_mtl_tex atIndex: 5usize];
 
                                     // Write SurfaceBounds
-                                    let dst = (msg_send![inst.metal_buffer, contents] as *mut u8).add(instance_offset) as *mut SurfaceBounds;
+                                    let contents: *mut c_void = msg_send![inst.metal_buffer, contents];
+                                    let dst = (contents as *mut u8).add(instance_offset) as *mut SurfaceBounds;
                                     ptr::write(dst, SurfaceBounds { bounds: surface.bounds, content_mask: surface.content_mask.clone() });
                                     let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: 1u64];
                                     instance_offset += bytes_len;
@@ -1077,7 +1093,7 @@ impl Metal4AtlasState {
                 kind,
             },
             allocator: BucketedAtlasAllocator::new(size.into()),
-            metal_texture,
+            metal_texture: AssertSendSync(metal_texture),
             live_atlas_keys: 0,
         };
         if let Some(ix) = index {
@@ -1101,14 +1117,19 @@ impl Metal4AtlasState {
     }
 }
 
+#[derive(Clone)]
+struct AssertSendSync<T>(T);
+unsafe impl<T> Send for AssertSendSync<T> {}
+unsafe impl<T> Sync for AssertSendSync<T> {}
+
 struct Metal4AtlasTextureView {
-    metal_texture: Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>,
+    metal_texture: AssertSendSync<Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>>,
 }
 
 struct Metal4AtlasTexture {
     id: AtlasTextureId,
     allocator: BucketedAtlasAllocator,
-    metal_texture: Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>, // id<MTLTexture>
+    metal_texture: AssertSendSync<Retained<ProtocolObject<dyn objc2_metal::MTLTexture>>>, // id<MTLTexture>
     live_atlas_keys: u32,
 }
 
@@ -1129,7 +1150,7 @@ impl Metal4AtlasTexture {
     }
 
     fn bytes_per_pixel(&self) -> u8 {
-        match unsafe { self.metal_texture.pixelFormat() } {
+        match unsafe { self.metal_texture.0.pixelFormat() } {
             MTLPixelFormat::A8Unorm => 1,
             MTLPixelFormat::R8Unorm => 1,
             MTLPixelFormat::RGBA8Unorm | MTLPixelFormat::BGRA8Unorm => 4,
@@ -1148,10 +1169,10 @@ impl Metal4AtlasTexture {
 
 impl Metal4AtlasTextureView {
     fn ptr(&self) -> *mut Object {
-        Retained::as_ptr(&self.metal_texture) as *mut _
+        Retained::as_ptr(&self.metal_texture.0) as *mut _
     }
-    fn width(&self) -> usize { unsafe { self.metal_texture.width() as usize } }
-    fn height(&self) -> usize { unsafe { self.metal_texture.height() as usize } }
+    fn width(&self) -> usize { unsafe { self.metal_texture.0.width() as usize } }
+    fn height(&self) -> usize { unsafe { self.metal_texture.0.height() as usize } }
     fn upload(&self, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
         // Build MTLRegion {origin:{x,y,0}, size:{w,h,1}}
         #[repr(C)]
@@ -1174,12 +1195,12 @@ impl Metal4AtlasTextureView {
             },
         };
         // Determine bpp from pixelFormat
-        let pf: MTLPixelFormat = unsafe { self.metal_texture.pixelFormat() };
+        let pf: MTLPixelFormat = unsafe { self.metal_texture.0.pixelFormat() };
         let bpp: u8 = match pf { MTLPixelFormat::A8Unorm | MTLPixelFormat::R8Unorm => 1, _ => 4 };
         let bytes_per_row = bounds.size.width.to_bytes(bpp) as usize;
         unsafe {
             // replaceRegion:mipmapLevel:withBytes:bytesPerRow:
-            let tex_ptr = Retained::as_ptr(&self.metal_texture) as *mut Object;
+            let tex_ptr = Retained::as_ptr(&self.metal_texture.0) as *mut Object;
             let _: () = msg_send![tex_ptr, replaceRegion: &region as *const _ as *const _ mipmapLevel: 0usize withBytes: bytes.as_ptr() as *const _ bytesPerRow: bytes_per_row];
         }
     }
