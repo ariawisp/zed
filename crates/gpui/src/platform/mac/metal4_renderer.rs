@@ -18,7 +18,10 @@ use objc2_metal::{
     MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLBlendOperation,
     MTLBlendFactor, MTLResidencySet, MTLResidencySetDescriptor, MTLAllocation,
 };
-use objc2_metal::{MTL4CompilerDescriptor, MTL4LibraryFunctionDescriptor};
+use objc2_metal::{
+    MTL4CompilerDescriptor, MTL4LibraryFunctionDescriptor, MTL4CommandAllocator, MTL4CommandBuffer,
+    MTL4CommandQueue,
+};
 use objc2_metal::{MTLTexture, MTLTextureDescriptor, MTLResourceOptions};
 use objc2_quartz_core::CAMetalLayer;
 use objc2_core_foundation::CGSize;
@@ -112,18 +115,18 @@ pub(crate) struct Metal4Renderer {
     device: Retained<ProtocolObject<dyn MTLDevice>>, // id<MTLDevice>
     layer: Retained<CAMetalLayer>,                    // CAMetalLayer
     // Use MTL4 allocators to reduce command buffer creation overhead
-    command_allocators: Vec<*mut Object>,
+    command_allocators: Vec<Retained<ProtocolObject<dyn MTL4CommandAllocator>>>,
     frame_index: usize,
     #[allow(dead_code)]
     presents_with_transaction: bool,
     atlas: Arc<Metal4Atlas>,
     // Pipelines
-    quads_pso: *mut Object,
-    mono_sprites_pso: *mut Object,
+    quads_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    mono_sprites_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     // Static geometry buffer
     unit_vertices: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
     // Global argument table (samplers, globals)
-    argument_table: *mut Object,
+    argument_table: Retained<ProtocolObject<dyn MTL4ArgumentTable>>,
     // Small shared buffers for argument table
     viewport_size_buffer: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
     atlas_size_buffer: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
@@ -132,14 +135,14 @@ pub(crate) struct Metal4Renderer {
     path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     path_sample_count: u32,
     // Additional PSOs
-    path_raster_pso: *mut Object,
-    path_sprites_pso: *mut Object,
-    underlines_pso: *mut Object,
-    surfaces_pso: *mut Object,
+    path_raster_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    path_sprites_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    underlines_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    surfaces_pso: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     // CoreVideo texture cache
     cv_texture_cache: *mut ::std::ffi::c_void,
     // MTL4 queue + sync
-    command_queue: *mut Object,
+    command_queue: Retained<ProtocolObject<dyn MTL4CommandQueue>>,
     shared_event: *mut Object,
     frame_number: u64,
     residency_set: Option<Retained<ProtocolObject<dyn MTLResidencySet>>>,
@@ -175,9 +178,8 @@ impl Metal4Renderer {
     }
 
     #[inline]
-    unsafe fn bind_argument_table(&self, encoder: *mut Object) {
-        let stages_mask: u64 = 1u64 | 2u64; // Vertex | Fragment
-        let _: () = msg_send![encoder, setArgumentTable: self.argument_table atStages: stages_mask];
+    unsafe fn bind_argument_table(&self, encoder: &ProtocolObject<dyn MTL4RenderCommandEncoder>) {
+        encoder.setArgumentTable_atStages(&self.argument_table, MTLRenderStages::Vertex | MTLRenderStages::Fragment);
     }
 
     fn build_render_pso(
@@ -187,7 +189,7 @@ impl Metal4Renderer {
         vertex_name: &str,
         fragment_name: &str,
         pixel_format: MTLPixelFormat,
-    ) -> *mut Object {
+    ) -> Retained<ProtocolObject<dyn MTLRenderPipelineState>> {
         unsafe {
             // Create optional MTL4 compiler (validates availability)
             let _compiler = device
@@ -216,10 +218,9 @@ impl Metal4Renderer {
             color0.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
             color0.setDestinationAlphaBlendFactor(MTLBlendFactor::One);
 
-            let pso = device
+            device
                 .newRenderPipelineStateWithDescriptor_error(&rpdesc)
-                .expect("newRenderPipelineStateWithDescriptor:error:");
-            Retained::as_ptr(&pso) as *mut Object
+                .expect("newRenderPipelineStateWithDescriptor:error:")
         }
     }
 
@@ -231,7 +232,7 @@ impl Metal4Renderer {
         fragment_name: &str,
         pixel_format: MTLPixelFormat,
         sample_count: u32,
-    ) -> *mut Object {
+    ) -> Retained<ProtocolObject<dyn MTLRenderPipelineState>> {
         unsafe {
             let rpdesc = MTLRenderPipelineDescriptor::new();
             rpdesc.setLabel(Some(&NSString::from_str(label)));
@@ -259,10 +260,9 @@ impl Metal4Renderer {
                 .newCompilerWithDescriptor_error(&MTL4CompilerDescriptor::new())
                 .expect("MTL4Compiler");
 
-            let pso = device
+            device
                 .newRenderPipelineStateWithDescriptor_error(&rpdesc)
-                .expect("newRenderPipelineStateWithDescriptor:error:");
-            Retained::as_ptr(&pso) as *mut Object
+                .expect("newRenderPipelineStateWithDescriptor:error:")
         }
     }
 
@@ -316,10 +316,8 @@ impl Metal4Renderer {
         let atlas = Arc::new(Metal4Atlas::new(device.clone()));
         // Create a small ring of MTL4CommandAllocator (3 in-flight by default)
         let mut command_allocators = Vec::new();
-        let dev_ptr = Retained::as_ptr(&device) as *mut Object;
         for _ in 0..3 {
-            let alloc: *mut Object = unsafe { msg_send![dev_ptr, newCommandAllocator] };
-            command_allocators.push(alloc);
+            if let Some(alloc) = device.newCommandAllocator() { command_allocators.push(alloc); }
         }
 
         // Build library from header + shader source
@@ -403,7 +401,8 @@ impl Metal4Renderer {
         };
 
         // Create MTL4 command queue and shared event
-        let command_queue: *mut Object = unsafe { msg_send![dev_ptr, newMTL4CommandQueue] };
+        let command_queue = device.newMTL4CommandQueue().expect("newMTL4CommandQueue");
+        let dev_ptr = Retained::as_ptr(&device) as *mut Object;
         let shared_event: *mut Object = unsafe { msg_send![dev_ptr, newSharedEvent] };
         let frame_number: u64 = 0;
         unsafe { let _: () = msg_send![shared_event, setSignaledValue: frame_number]; }
@@ -464,19 +463,16 @@ impl Metal4Renderer {
         max_buffers: usize,
         max_textures: usize,
         max_samplers: usize,
-    ) -> *mut Object {
-        unsafe {
-            let desc: *mut Object = msg_send![class!(MTL4ArgumentTableDescriptor), new];
-            let _: () = msg_send![desc, setMaxBufferBindCount: max_buffers as u64];
-            let _: () = msg_send![desc, setMaxTextureBindCount: max_textures as u64];
-            let _: () = msg_send![desc, setMaxSamplerStateBindCount: max_samplers as u64];
-            let _: () = msg_send![desc, setSupportAttributeStrides: YES];
-            let _: () = msg_send![desc, setInitializeBindings: YES];
-            let mut err: *mut Object = core::ptr::null_mut();
-            let dev_ptr = Retained::as_ptr(device) as *mut Object;
-            let tbl: *mut Object = msg_send![dev_ptr, newArgumentTableWithDescriptor: desc error: &mut err];
-            tbl
-        }
+    ) -> Retained<ProtocolObject<dyn MTL4ArgumentTable>> {
+        let desc = objc2_metal::MTL4ArgumentTableDescriptor::new();
+        desc.setMaxBufferBindCount(max_buffers as _);
+        desc.setMaxTextureBindCount(max_textures as _);
+        desc.setMaxSamplerStateBindCount(max_samplers as _);
+        desc.setSupportAttributeStrides(true);
+        desc.setInitializeBindings(true);
+        device
+            .newArgumentTableWithDescriptor_error(&desc)
+            .expect("newArgumentTableWithDescriptor:error:")
     }
 
     pub fn layer_ptr(&self) -> *mut Object {
@@ -559,15 +555,12 @@ impl Metal4Renderer {
             let alloc = self.command_allocators[self.frame_index % self.command_allocators.len()];
             self.frame_index = self.frame_index.wrapping_add(1);
 
-            // id<MTL4CommandBuffer> cmd = [alloc newCommandBuffer] (fallback to device if needed)
-            let mut command_buffer: *mut Object = msg_send![alloc, newCommandBuffer];
-            if command_buffer.is_null() {
-                let dev_ptr = Retained::as_ptr(&self.device) as *mut Object;
-                command_buffer = msg_send![dev_ptr, newCommandBuffer];
-                if command_buffer.is_null() {
-                    return;
-                }
-            }
+            // Create typed MTL4CommandBuffer and begin with allocator
+            let command_buffer = match self.device.newCommandBuffer() {
+                Some(cb) => cb,
+                None => return,
+            };
+            command_buffer.beginCommandBufferWithAllocator(&self.command_allocators[self.frame_index % self.command_allocators.len()]);
 
             // Increment frame number and wait on prior frame if needed
             self.frame_number = self.frame_number.wrapping_add(1);
@@ -576,33 +569,29 @@ impl Metal4Renderer {
                 let _: () = msg_send![self.shared_event, waitUntilSignaledValue: previous timeoutMS: 10u64];
             }
 
-            // Build a render pass descriptor for clearing (typed color attachment config)
-            let pass_desc = MTLRenderPassDescriptor::new();
+            // Build a render pass descriptor for clearing (Metal 4)
+            let pass_desc = MTL4RenderPassDescriptor::new();
             let color0 = pass_desc.colorAttachments().objectAtIndexedSubscript(0);
-            // Texture is an Objective-C object; cast to typed ProtocolObject<dyn MTLTexture>
             color0.setTexture(Some(&tex_ret));
             color0.setLoadAction(MTLLoadAction::Clear);
             color0.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
             color0.setStoreAction(MTLStoreAction::Store);
-            let pass_ptr = Retained::as_ptr(&pass_desc) as *mut Object;
-
-            // Begin MTL4 command buffer with allocator for reuse
-            let _: () = msg_send![command_buffer, beginCommandBufferWithAllocator: alloc];
+            
             // Label the command buffer with frame number (helps counters/debug)
             let label = NSString::from_str(&format!("GPUI frame {}", self.frame_number));
-            let _: () = msg_send![command_buffer, setLabel: label];
-
-            let mut encoder: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: pass_ptr];
-            if !encoder.is_null() {
+            command_buffer.setLabel(Some(&label));
+            
+            let mut encoder = match command_buffer.renderCommandEncoderWithDescriptor(&pass_desc) { Some(e) => e, None => return };
+            {
                 // Set viewport to drawable size
                 #[repr(C)]
                 struct MTLViewport { originX: f64, originY: f64, width: f64, height: f64, znear: f64, zfar: f64 }
                 let size = self.layer.drawableSize();
                 let vp = MTLViewport { originX: 0.0, originY: 0.0, width: size.width, height: size.height, znear: 0.0, zfar: 1.0 };
-                let _: () = msg_send![encoder, setViewport: vp];
+                encoder.setViewport(vp);
 
                 // Bind the Metal 4 argument table to both vertex and fragment stages
-                self.bind_argument_table(encoder);
+                self.bind_argument_table(&encoder);
 
                 // Create per-frame instance buffer
                 let mut pool = InstanceBufferPool::new();
@@ -638,7 +627,7 @@ impl Metal4Renderer {
                             let bytes_len = mem::size_of_val(quads);
                             if instance_offset + bytes_len > inst.size { break; }
                             // Pipeline
-                            if !self.quads_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.quads_pso]; }
+                            encoder.setRenderPipelineState(&self.quads_pso);
                             // Instance buffer address with offset for this draw -> buffer(1)
                             let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                             let inst_addr = inst_base + instance_offset as u64;
@@ -646,12 +635,12 @@ impl Metal4Renderer {
                             // Upload
                             upload_slice(inst.metal_buffer, instance_offset, quads);
                             // Draw
-                            let _: () = msg_send![encoder, drawPrimitives: 3u64 /*triangle*/ vertexStart: 0u64 vertexCount: 6u64 instanceCount: quads.len() as u64];
+                            unsafe { encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(MTLPrimitiveType::Triangle, 0, 6, quads.len() as _); }
                             instance_offset += bytes_len;
                         }
                         PrimitiveBatch::Paths(paths) => {
                             // End current encoder
-                            let _: () = msg_send![encoder, endEncoding];
+                            encoder.endEncoding();
 
                             // Ensure intermediate textures exist
                             let size = self.layer.drawableSize();
@@ -676,7 +665,7 @@ impl Metal4Renderer {
                                 att.setLoadAction(MTLLoadAction::Clear);
                                 att.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
 
-                                let enc2: *mut Object = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&rp) as *mut Object];
+                                let enc2: *mut Object = msg_send![Retained::as_ptr(&command_buffer) as *mut Object, renderCommandEncoderWithDescriptor: Retained::as_ptr(&rp) as *mut Object];
                                 if !enc2.is_null() {
                                     self.bind_argument_table(enc2);
                                     let _: () = msg_send![enc2, setRenderPipelineState: self.path_raster_pso];
@@ -711,19 +700,17 @@ impl Metal4Renderer {
 
                             // Resume drawable pass with Load action
                             let _: () = msg_send![encoder, endEncoding];
-                            let pass_desc2 = MTLRenderPassDescriptor::new();
+                            let pass_desc2 = MTL4RenderPassDescriptor::new();
                             let color02 = pass_desc2.colorAttachments().objectAtIndexedSubscript(0);
                             color02.setTexture(Some(&tex_ret));
                             color02.setLoadAction(MTLLoadAction::Load);
                             color02.setStoreAction(MTLStoreAction::Store);
-                            encoder = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&pass_desc2) as *mut Object];
-                            if !encoder.is_null() {
-                                self.bind_argument_table(encoder);
-                            }
+                            encoder = command_buffer.renderCommandEncoderWithDescriptor(&pass_desc2).expect("resume encoder");
+                            self.bind_argument_table(&encoder);
 
                             // Sprites from intermediate
                             if !self.path_sprites_pso.is_null() && self.path_intermediate_texture.is_some() {
-                                let _: () = msg_send![encoder, setRenderPipelineState: self.path_sprites_pso];
+                                encoder.setRenderPipelineState(&self.path_sprites_pso);
                                 // Compute sprites
                                 let mut sprites: Vec<PathSprite> = Vec::new();
                                 if let Some(first) = paths.first() {
@@ -750,7 +737,7 @@ impl Metal4Renderer {
                                     if let Some(ref tex) = self.path_intermediate_texture {
                                         let _: () = msg_send![self.argument_table, setTexture: Retained::as_ptr(tex) atIndex: 4usize];
                                     }
-                                    let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: sprites.len() as u64];
+                                    unsafe { encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(MTLPrimitiveType::Triangle, 0, 6, sprites.len() as _); }
                                     instance_offset += bytes_len;
                                 }
                             }
@@ -760,7 +747,7 @@ impl Metal4Renderer {
                             align_offset(&mut instance_offset);
                             let bytes_len = mem::size_of_val(underlines);
                             if instance_offset + bytes_len > inst.size { break; }
-                            if !self.underlines_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.underlines_pso]; }
+                            encoder.setRenderPipelineState(&self.underlines_pso);
                             let uv_addr: u64 = msg_send![Retained::as_ptr(&self.unit_vertices) as *mut Object, gpuAddress];
                             let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                             let inst_addr = inst_base + instance_offset as u64;
@@ -769,7 +756,7 @@ impl Metal4Renderer {
                             let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
                             let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
                             upload_slice(inst.metal_buffer, instance_offset, underlines);
-                            let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: underlines.len() as u64];
+                            unsafe { encoder.drawPrimitives_vertexStart_vertexCount_instanceCount(MTLPrimitiveType::Triangle, 0, 6, underlines.len() as _); }
                             instance_offset += bytes_len;
                         }
                         PrimitiveBatch::MonochromeSprites { texture_id, sprites } => {
@@ -872,18 +859,19 @@ impl Metal4Renderer {
 
                 // End encoder and MTL4 command buffer
                 let _: () = msg_send![encoder, endEncoding];
-                let _: () = msg_send![command_buffer, endCommandBuffer];
+                command_buffer.endCommandBuffer();
 
                 // Submit and present via MTL4 command queue
                 unsafe {
                     // Wait for drawable availability
                     let _: () = msg_send![self.command_queue, waitForDrawable: Retained::as_ptr(&drawable) as *mut Object];
-                    // Commit buffer list (single buffer)
-                    let mut cb = command_buffer;
-                    let ptr_to_cb: *mut *mut Object = &mut cb;
-                    let _: () = msg_send![self.command_queue, commit: ptr_to_cb count: 1usize];
-                    // Signal drawable and present
-                    let _: () = msg_send![self.command_queue, signalDrawable: Retained::as_ptr(&drawable) as *mut Object];
+                    // Commit buffer list (single buffer) using raw selector for now
+                    let mut cb_ptr = Retained::as_ptr(&command_buffer) as *mut Object;
+                    let ptr_to_cb: *mut *mut Object = &mut cb_ptr;
+                    let _: () = msg_send![Retained::as_ptr(&self.command_queue) as *mut Object, commit: ptr_to_cb count: 1usize];
+                    // Signal drawable and present via typed helpers
+                    self.command_queue.waitForDrawable(&drawable);
+                    self.command_queue.signalDrawable(&drawable);
                     drawable.present();
                     // Signal shared event for this frame
                     let _: () = msg_send![self.command_queue, signalEvent: self.shared_event value: self.frame_number];
