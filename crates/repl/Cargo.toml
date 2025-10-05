@@ -16,7 +16,8 @@ doctest = false
 alacritty_terminal.workspace = true
 anyhow.workspace = true
 async-dispatcher.workspace = true
-async-tungstenite = { workspace = true, features = ["tokio", "tokio-rustls-manual-roots"] }
+# Align with jupyter-websocket-client's async-tungstenite version to avoid type mismatches
+async-tungstenite = { version = "0.31.0", features = ["tokio-runtime", "tokio-rustls-manual-roots"] }
 base64.workspace = true
 client.workspace = true
 collections.workspace = true

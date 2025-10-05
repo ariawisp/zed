@@ -124,6 +124,21 @@ where
     }
 }
 
+/// Fetch and decode an image from a URL or embedded asset path using GPUI's asset system.
+/// Returns a renderable image if already available; otherwise queues the load and returns None.
+pub fn fetch_render_image(
+    url_or_path: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Arc<RenderImage>> {
+    let source = ImageSource::from(url_or_path);
+    if let Some(result) = source.get_data(None, window, cx) {
+        return result.ok();
+    }
+    let _ = source.use_data(None, window, cx);
+    None
+}
+
 /// The style of an image element.
 pub struct ImageStyle {
     grayscale: bool,

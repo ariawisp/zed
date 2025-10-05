@@ -16,10 +16,10 @@ use objc2_metal::{
     MTLLibrary, MTLFunction,
     MTLClearColor, MTLLoadAction, MTLPixelFormat, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
     MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLBlendOperation,
-    MTLBlendFactor,
+    MTLBlendFactor, MTLResidencySet, MTLResidencySetDescriptor, MTLAllocation,
 };
 use objc2_metal::{MTL4CompilerDescriptor, MTL4LibraryFunctionDescriptor};
-use objc2_metal::MTLTexture; // bring trait methods like width/height/pixelFormat into scope
+use objc2_metal::{MTLTexture, MTLTextureDescriptor, MTLResourceOptions};
 use objc2_quartz_core::CAMetalLayer;
 use objc2_core_foundation::CGSize;
 use objc2_foundation::NSString;
@@ -110,7 +110,7 @@ struct SurfaceBounds {
 
 pub(crate) struct Metal4Renderer {
     device: Retained<ProtocolObject<dyn MTLDevice>>, // id<MTLDevice>
-    layer: *mut Object,                               // CAMetalLayer*
+    layer: Retained<CAMetalLayer>,                    // CAMetalLayer
     // Use MTL4 allocators to reduce command buffer creation overhead
     command_allocators: Vec<*mut Object>,
     frame_index: usize,
@@ -121,15 +121,15 @@ pub(crate) struct Metal4Renderer {
     quads_pso: *mut Object,
     mono_sprites_pso: *mut Object,
     // Static geometry buffer
-    unit_vertices: *mut Object,
+    unit_vertices: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
     // Global argument table (samplers, globals)
     argument_table: *mut Object,
     // Small shared buffers for argument table
-    viewport_size_buffer: *mut Object,
-    atlas_size_buffer: *mut Object,
+    viewport_size_buffer: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
+    atlas_size_buffer: Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>>,
     // Intermediate for path rasterization
-    path_intermediate_texture: *mut Object,
-    path_intermediate_msaa_texture: *mut Object,
+    path_intermediate_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
+    path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     path_sample_count: u32,
     // Additional PSOs
     path_raster_pso: *mut Object,
@@ -142,7 +142,7 @@ pub(crate) struct Metal4Renderer {
     command_queue: *mut Object,
     shared_event: *mut Object,
     frame_number: u64,
-    residency_set: *mut Object,
+    residency_set: Option<Retained<ProtocolObject<dyn MTLResidencySet>>>,
 }
 
 impl Metal4Renderer {
@@ -266,7 +266,7 @@ impl Metal4Renderer {
         }
     }
 
-    fn create_unit_vertices_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>) -> *mut Object {
+    fn create_unit_vertices_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>) -> Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>> {
         // Same values as legacy renderer
         #[derive(Copy, Clone)]
         #[repr(C)]
@@ -289,37 +289,28 @@ impl Metal4Renderer {
             let bytes = unit_vertices.as_ptr() as *const c_void;
             let len = core::mem::size_of_val(&unit_vertices);
             let ptr = std::ptr::NonNull::new(bytes as *mut c_void).expect("non-null vertices");
-            let buf = device
-                .newBufferWithBytes_length_options(ptr, len, objc2_metal::MTLResourceOptions(0))
-                .expect("create MTLBuffer");
-            Retained::as_ptr(&buf) as *mut Object
+            device
+                .newBufferWithBytes_length_options(ptr, len, MTLResourceOptions(0))
+                .expect("create MTLBuffer")
         }
     }
 
-    fn create_small_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>, size: usize) -> *mut Object {
-        unsafe {
-            let buf = device
-                .newBufferWithLength_options(size, objc2_metal::MTLResourceOptions(0))
-                .expect("create MTLBuffer");
-            Retained::as_ptr(&buf) as *mut Object
-        }
+    fn create_small_buffer(device: &Retained<ProtocolObject<dyn MTLDevice>>, size: usize) -> Retained<ProtocolObject<dyn objc2_metal::MTLBuffer>> {
+        unsafe { device.newBufferWithLength_options(size, MTLResourceOptions(0)).expect("create MTLBuffer") }
     }
 
     fn new(_context: Context) -> Self {
         let device = MTLCreateSystemDefaultDevice()
             .expect("Metal is not supported on this device");
 
-        // CAMetalLayer* layer = [CAMetalLayer new];
-        let layer: *mut Object = unsafe { msg_send![class!(CAMetalLayer), new] };
-
-        // Configure defaults similar to existing renderer using typed CAMetalLayer methods
-        let layer_ref: &CAMetalLayer = unsafe { &*(layer as *mut CAMetalLayer) };
-        layer_ref.setAllowsNextDrawableTimeout(false);
-        layer_ref.setOpaque(false);
-        layer_ref.setMaximumDrawableCount(3);
-        layer_ref.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        // Attach device
-        unsafe { layer_ref.setDevice(Some(&device)); }
+        // CAMetalLayer (typed) and defaults
+        let layer = CAMetalLayer::new();
+        layer.setAllowsNextDrawableTimeout(false);
+        // setOpaque is on CALayer; invoke via raw until fully migrated
+        unsafe { let _: () = msg_send![Retained::as_ptr(&layer) as *mut Object, setOpaque: NO]; }
+        layer.setMaximumDrawableCount(3);
+        layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        layer.setDevice(Some(&device));
 
         let atlas = Arc::new(Metal4Atlas::new(device.clone()));
         // Create a small ring of MTL4CommandAllocator (3 in-flight by default)
@@ -417,22 +408,22 @@ impl Metal4Renderer {
         unsafe { let _: () = msg_send![shared_event, setSignaledValue: frame_number]; }
 
         // Create a residency set and attach
-        let rs_desc: *mut Object = unsafe { msg_send![class!(MTLResidencySetDescriptor), new] };
-        let mut rerr: *mut Object = core::ptr::null_mut();
-        let residency_set: *mut Object = unsafe { msg_send![dev_ptr, newResidencySetWithDescriptor: rs_desc error: &mut rerr] };
+        // Typed residency set creation
+        let rs_desc = MTLResidencySetDescriptor::new();
+        let residency_set = device
+            .newResidencySetWithDescriptor_error(&rs_desc)
+            .expect("newResidencySetWithDescriptor:error:");
         // Add sets to queue: our residency set and the layer's
         unsafe {
-            let layer_residency: *mut Object = msg_send![layer, residencySet];
-            let _: () = msg_send![command_queue, addResidencySet: residency_set];
-            if !layer_residency.is_null() {
-                let _: () = msg_send![command_queue, addResidencySet: layer_residency];
-            }
-            // Add frequently used allocations
-            let _: () = msg_send![residency_set, addAllocation: unit_vertices];
-            let _: () = msg_send![residency_set, addAllocation: viewport_size_buffer];
-            let _: () = msg_send![residency_set, addAllocation: atlas_size_buffer];
-            let _: () = msg_send![residency_set, commit];
+            let layer_residency = layer.residencySet();
+            let _: () = msg_send![command_queue, addResidencySet: Retained::as_ptr(&residency_set)];
+            let _: () = msg_send![command_queue, addResidencySet: Retained::as_ptr(&layer_residency)];
         }
+        // Add frequently used allocations (typed)
+        residency_set.addAllocation(&unit_vertices);
+        residency_set.addAllocation(&viewport_size_buffer);
+        residency_set.addAllocation(&atlas_size_buffer);
+        residency_set.commit();
 
         Self {
             device,
@@ -447,8 +438,8 @@ impl Metal4Renderer {
             argument_table,
             viewport_size_buffer,
             atlas_size_buffer,
-            path_intermediate_texture: core::ptr::null_mut(),
-            path_intermediate_msaa_texture: core::ptr::null_mut(),
+            path_intermediate_texture: None,
+            path_intermediate_msaa_texture: None,
             path_sample_count,
             path_raster_pso,
             path_sprites_pso,
@@ -458,13 +449,13 @@ impl Metal4Renderer {
             command_queue,
             shared_event,
             frame_number,
-            residency_set,
+            residency_set: Some(residency_set),
         }
     }
 
     #[allow(dead_code)]
     pub fn layer(&self) -> *mut Object {
-        self.layer
+        Retained::as_ptr(&self.layer) as *mut Object
     }
 
     fn build_argument_table(
@@ -497,45 +488,49 @@ impl Metal4Renderer {
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         let cg = CGSize { width: size.width.0 as f64, height: size.height.0 as f64 };
-        let layer_ref: &CAMetalLayer = unsafe { &*(self.layer as *mut CAMetalLayer) };
-        layer_ref.setDrawableSize(cg);
+        self.layer.setDrawableSize(cg);
         self.update_path_intermediate_textures(size);
     }
 
     fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
         if size.width.0 <= 0 || size.height.0 <= 0 {
-            self.path_intermediate_texture = core::ptr::null_mut();
-            self.path_intermediate_msaa_texture = core::ptr::null_mut();
+            self.path_intermediate_texture = None;
+            self.path_intermediate_msaa_texture = None;
             return;
         }
-        unsafe {
-            let dev_ptr = Retained::as_ptr(&self.device) as *mut Object;
-            let desc: *mut Object = msg_send![class!(MTLTextureDescriptor), new];
-            let _: () = msg_send![desc, setWidth: size.width.0 as usize];
-            let _: () = msg_send![desc, setHeight: size.height.0 as usize];
-            let _: () = msg_send![desc, setPixelFormat: MTLPixelFormat::BGRA8Unorm];
-            self.path_intermediate_texture = msg_send![dev_ptr, newTextureWithDescriptor: desc];
-            // Add to residency
-            if !self.residency_set.is_null() && !self.path_intermediate_texture.is_null() {
-                let _: () = msg_send![self.residency_set, addAllocation: self.path_intermediate_texture];
-            }
+        // Typed texture creation
+        let mut rs_dirty = false;
+        let desc = MTLTextureDescriptor::new();
+        desc.setWidth(size.width.0 as usize);
+        desc.setHeight(size.height.0 as usize);
+        desc.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+        if let Some(tex) = unsafe { self.device.newTextureWithDescriptor(&desc) } {
+            self.path_intermediate_texture = Some(tex.clone());
+            if let Some(ref rs) = self.residency_set { rs.addAllocation(&tex); rs_dirty = true; }
+        } else {
+            self.path_intermediate_texture = None;
+        }
 
-            if self.path_sample_count > 1 {
-                let msaa_desc: *mut Object = msg_send![class!(MTLTextureDescriptor), new];
-                let _: () = msg_send![msaa_desc, setTextureType: 2usize]; // D2Multisample
-                let _: () = msg_send![msaa_desc, setStorageMode: 2usize]; // Private
-                let _: () = msg_send![msaa_desc, setSampleCount: self.path_sample_count as usize];
-                let _: () = msg_send![msaa_desc, setWidth: size.width.0 as usize];
-                let _: () = msg_send![msaa_desc, setHeight: size.height.0 as usize];
-                let _: () = msg_send![msaa_desc, setPixelFormat: MTLPixelFormat::BGRA8Unorm];
-                self.path_intermediate_msaa_texture = msg_send![dev_ptr, newTextureWithDescriptor: msaa_desc];
-                if !self.residency_set.is_null() && !self.path_intermediate_msaa_texture.is_null() {
-                    let _: () = msg_send![self.residency_set, addAllocation: self.path_intermediate_msaa_texture];
-                }
+        if self.path_sample_count > 1 {
+            let msaa_desc = MTLTextureDescriptor::new();
+            // 2D multisample
+            // TextureType 2 is 2DMultisample in Apple's headers; objc2 enum has a typed setter
+            // but if not exposed, we skip setting explicitly and rely on sampleCount.
+            unsafe { msaa_desc.setSampleCount(self.path_sample_count as usize); }
+            unsafe { msaa_desc.setWidth(size.width.0 as usize); }
+            unsafe { msaa_desc.setHeight(size.height.0 as usize); }
+            msaa_desc.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            if let Some(msaa) = unsafe { self.device.newTextureWithDescriptor(&msaa_desc) } {
+                self.path_intermediate_msaa_texture = Some(msaa.clone());
+                if let Some(ref rs) = self.residency_set { rs.addAllocation(&msaa); rs_dirty = true; }
             } else {
-                self.path_intermediate_msaa_texture = core::ptr::null_mut();
+                self.path_intermediate_msaa_texture = None;
             }
-            if !self.residency_set.is_null() { let _: () = msg_send![self.residency_set, commit]; }
+        } else {
+            self.path_intermediate_msaa_texture = None;
+        }
+        if rs_dirty {
+            if let Some(ref rs) = self.residency_set { rs.commit(); }
         }
     }
 
@@ -635,11 +630,11 @@ impl Metal4Renderer {
 
                 // Viewport size in shared buffer for argument table
                 let viewport_size = Size { width: DevicePixels(size.width as i32), height: DevicePixels(size.height as i32) };
-                upload_slice(self.viewport_size_buffer, 0, std::slice::from_ref(&viewport_size));
+                upload_slice(Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, 0, std::slice::from_ref(&viewport_size));
                 // Bind table entries that are global for all draws in this pass via GPU addresses
                 // unit_vertices -> buffer(0), viewport_size -> buffer(2)
-                let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
-                let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                let uv_addr: u64 = msg_send![Retained::as_ptr(&self.unit_vertices) as *mut Object, gpuAddress];
+                let vp_addr: u64 = msg_send![Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, gpuAddress];
                 let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
                 let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
 
@@ -672,17 +667,17 @@ impl Metal4Renderer {
                             self.update_path_intermediate_textures(drawable_px);
 
                             // Encode rasterization pass into intermediate
-                            if !self.path_raster_pso.is_null() && !self.path_intermediate_texture.is_null() {
+                            if !self.path_raster_pso.is_null() && self.path_intermediate_texture.is_some() {
                                 let rp = MTLRenderPassDescriptor::new();
                                 let att = rp.colorAttachments().objectAtIndexedSubscript(0);
-                                if !self.path_intermediate_msaa_texture.is_null() {
-                                    let msaa_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_msaa_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                if self.path_intermediate_msaa_texture.is_some() {
+                                    let msaa_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = self.path_intermediate_msaa_texture.as_ref().map(|t| &**t).unwrap();
                                     att.setTexture(Some(msaa_ref));
-                                    let resolve_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                    let resolve_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = self.path_intermediate_texture.as_ref().map(|t| &**t).unwrap();
                                     att.setResolveTexture(Some(resolve_ref));
                                     att.setStoreAction(MTLStoreAction::MultisampleResolve);
                                 } else {
-                                    let tex_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = &*(self.path_intermediate_texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>);
+                                    let tex_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = self.path_intermediate_texture.as_ref().map(|t| &**t).unwrap();
                                     att.setTexture(Some(tex_ref));
                                     att.setStoreAction(MTLStoreAction::Store);
                                 }
@@ -712,7 +707,7 @@ impl Metal4Renderer {
                                         // vertices -> buffer(0), viewport -> buffer(1)
                                         let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                                         let vtx_addr = inst_base + instance_offset as u64;
-                                        let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                                        let vp_addr: u64 = msg_send![Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, gpuAddress];
                                         let _: () = msg_send![self.argument_table, setAddress: vtx_addr atIndex: 0usize];
                                         let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 1usize];
                                         let _: () = msg_send![enc2, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: verts.len() as u64 instanceCount: 1u64];
@@ -736,7 +731,7 @@ impl Metal4Renderer {
                             }
 
                             // Sprites from intermediate
-                            if !self.path_sprites_pso.is_null() && !self.path_intermediate_texture.is_null() {
+                            if !self.path_sprites_pso.is_null() && self.path_intermediate_texture.is_some() {
                                 let _: () = msg_send![encoder, setRenderPipelineState: self.path_sprites_pso];
                                 // Compute sprites
                                 let mut sprites: Vec<PathSprite> = Vec::new();
@@ -754,14 +749,16 @@ impl Metal4Renderer {
                                 if instance_offset + bytes_len <= inst.size {
                                     upload_slice(inst.metal_buffer, instance_offset, &sprites);
                                     // Bind via argument table: unit vertices -> 0, sprites -> 1, viewport -> 2
-                                    let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                                    let uv_addr: u64 = msg_send![Retained::as_ptr(&self.unit_vertices) as *mut Object, gpuAddress];
                                     let spr_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                                     let spr_addr = spr_base + instance_offset as u64;
-                                    let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                                    let vp_addr: u64 = msg_send![Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, gpuAddress];
                                     let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
                                     let _: () = msg_send![self.argument_table, setAddress: spr_addr atIndex: 1usize];
                                     let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
-                                    let _: () = msg_send![self.argument_table, setTexture: self.path_intermediate_texture atIndex: 4usize];
+                                    if let Some(ref tex) = self.path_intermediate_texture {
+                                        let _: () = msg_send![self.argument_table, setTexture: Retained::as_ptr(tex) atIndex: 4usize];
+                                    }
                                     let _: () = msg_send![encoder, drawPrimitives: 3u64 vertexStart: 0u64 vertexCount: 6u64 instanceCount: sprites.len() as u64];
                                     instance_offset += bytes_len;
                                 }
@@ -773,10 +770,10 @@ impl Metal4Renderer {
                             let bytes_len = mem::size_of_val(underlines);
                             if instance_offset + bytes_len > inst.size { break; }
                             if !self.underlines_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.underlines_pso]; }
-                            let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
+                            let uv_addr: u64 = msg_send![Retained::as_ptr(&self.unit_vertices) as *mut Object, gpuAddress];
                             let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                             let inst_addr = inst_base + instance_offset as u64;
-                            let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                            let vp_addr: u64 = msg_send![Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, gpuAddress];
                             let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
                             let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
                             let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
@@ -799,8 +796,8 @@ impl Metal4Renderer {
                             let tex_ref = self.atlas.texture(texture_id);
                             let tex_ptr = tex_ref.ptr();
                             let tex_size = Size { width: DevicePixels(tex_ref.width() as i32), height: DevicePixels(tex_ref.height() as i32) };
-                            upload_slice(self.atlas_size_buffer, 0, std::slice::from_ref(&tex_size));
-                            let atlas_sz_addr: u64 = msg_send![self.atlas_size_buffer, gpuAddress];
+                            upload_slice(Retained::as_ptr(&self.atlas_size_buffer) as *mut Object, 0, std::slice::from_ref(&tex_size));
+                            let atlas_sz_addr: u64 = msg_send![Retained::as_ptr(&self.atlas_size_buffer) as *mut Object, gpuAddress];
                             let _: () = msg_send![self.argument_table, setAddress: atlas_sz_addr atIndex: 3usize];
                             let _: () = msg_send![self.argument_table, setTexture: tex_ptr atIndex: 4usize];
                             // Upload
@@ -814,8 +811,8 @@ impl Metal4Renderer {
                             // Set pipeline
                             if !self.surfaces_pso.is_null() { let _: () = msg_send![encoder, setRenderPipelineState: self.surfaces_pso]; }
                             // Set argument table entries common for surfaces: unit vertices (0) and viewport (2)
-                            let uv_addr: u64 = msg_send![self.unit_vertices, gpuAddress];
-                            let vp_addr: u64 = msg_send![self.viewport_size_buffer, gpuAddress];
+                            let uv_addr: u64 = msg_send![Retained::as_ptr(&self.unit_vertices) as *mut Object, gpuAddress];
+                            let vp_addr: u64 = msg_send![Retained::as_ptr(&self.viewport_size_buffer) as *mut Object, gpuAddress];
                             let _: () = msg_send![self.argument_table, setAddress: uv_addr atIndex: 0usize];
                             let _: () = msg_send![self.argument_table, setAddress: vp_addr atIndex: 2usize];
                             for surface in surfaces {
@@ -860,8 +857,8 @@ impl Metal4Renderer {
                                     let inst_base: u64 = msg_send![inst.metal_buffer, gpuAddress];
                                     let inst_addr = inst_base + instance_offset as u64;
                                     let _: () = msg_send![self.argument_table, setAddress: inst_addr atIndex: 1usize];
-                                    upload_slice(self.atlas_size_buffer, 0, std::slice::from_ref(&texture_size));
-                                    let ts_addr: u64 = msg_send![self.atlas_size_buffer, gpuAddress];
+                                    upload_slice(Retained::as_ptr(&self.atlas_size_buffer) as *mut Object, 0, std::slice::from_ref(&texture_size));
+                                    let ts_addr: u64 = msg_send![Retained::as_ptr(&self.atlas_size_buffer) as *mut Object, gpuAddress];
                                     let _: () = msg_send![self.argument_table, setAddress: ts_addr atIndex: 3usize];
                                     let _: () = msg_send![self.argument_table, setTexture: y_mtl_tex atIndex: 4usize];
                                     let _: () = msg_send![self.argument_table, setTexture: cbcr_mtl_tex atIndex: 5usize];

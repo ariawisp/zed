@@ -179,6 +179,11 @@ zeta2.workspace = true
 zlog.workspace = true
 zlog_settings.workspace = true
 
+# Ensure async-tungstenite v0.31.0 is built with tokio runtime features for
+# Jupyter crates that depend on that version without explicitly enabling it.
+# This coexists with workspace-wide 0.29.1 used elsewhere.
+async-tungstenite-031 = { package = "async-tungstenite", version = "0.31.0", features = ["tokio-runtime"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true
 

@@ -1360,7 +1360,9 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tungstenite 0.27.0",
 ]
 
@@ -9031,7 +9033,6 @@ name = "libghostty-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.70.1",
- "pkg-config",
 ]
 
 [[package]]
@@ -13390,7 +13391,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-dispatcher",
- "async-tungstenite 0.29.1",
+ "async-tungstenite 0.31.0",
  "base64 0.22.1",
  "client",
  "collections",
@@ -17597,6 +17598,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.2",
+ "rustls 0.23.32",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.17",
  "utf-8",
@@ -20647,6 +20650,7 @@ dependencies = [
  "ashpd 0.11.0",
  "assets",
  "assistant_tools",
+ "async-tungstenite 0.31.0",
  "audio",
  "auto_update",
  "auto_update_ui",
