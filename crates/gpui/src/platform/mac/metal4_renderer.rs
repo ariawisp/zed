@@ -305,7 +305,8 @@ impl Metal4Renderer {
 
         // CAMetalLayer (typed) and defaults
         let layer = CAMetalLayer::new();
-        layer.setAllowsNextDrawableTimeout(false);
+        // Not in bindings yet; set via raw
+        unsafe { let _: () = msg_send![Retained::as_ptr(&layer) as *mut Object, setAllowsNextDrawableTimeout: NO]; }
         // setOpaque is on CALayer; invoke via raw until fully migrated
         unsafe { let _: () = msg_send![Retained::as_ptr(&layer) as *mut Object, setOpaque: NO]; }
         layer.setMaximumDrawableCount(3);
@@ -551,14 +552,8 @@ impl Metal4Renderer {
     pub fn draw(&mut self, scene: &Scene) {
         // Clear + draw batches (quads + mono sprites) using MTL4
         unsafe {
-            let drawable: *mut Object = msg_send![self.layer, nextDrawable];
-            if drawable.is_null() {
-                return;
-            }
-            let texture: *mut Object = msg_send![drawable, texture];
-            if texture.is_null() {
-                return;
-            }
+            let drawable = match self.layer.nextDrawable() { Some(d) => d, None => { return; } };
+            let tex_ret = drawable.texture();
 
             // Rotate command allocator (if available)
             let alloc = self.command_allocators[self.frame_index % self.command_allocators.len()];
@@ -585,8 +580,7 @@ impl Metal4Renderer {
             let pass_desc = MTLRenderPassDescriptor::new();
             let color0 = pass_desc.colorAttachments().objectAtIndexedSubscript(0);
             // Texture is an Objective-C object; cast to typed ProtocolObject<dyn MTLTexture>
-            let tex_ref: &ProtocolObject<dyn objc2_metal::MTLTexture> = unsafe { &*(texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>) };
-            color0.setTexture(Some(tex_ref));
+            color0.setTexture(Some(&tex_ret));
             color0.setLoadAction(MTLLoadAction::Clear);
             color0.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0 });
             color0.setStoreAction(MTLStoreAction::Store);
@@ -602,10 +596,8 @@ impl Metal4Renderer {
             if !encoder.is_null() {
                 // Set viewport to drawable size
                 #[repr(C)]
-                struct CGSize { width: f64, height: f64 }
-                #[repr(C)]
                 struct MTLViewport { originX: f64, originY: f64, width: f64, height: f64, znear: f64, zfar: f64 }
-                let size: CGSize = msg_send![self.layer, drawableSize];
+                let size = self.layer.drawableSize();
                 let vp = MTLViewport { originX: 0.0, originY: 0.0, width: size.width, height: size.height, znear: 0.0, zfar: 1.0 };
                 let _: () = msg_send![encoder, setViewport: vp];
 
@@ -662,7 +654,7 @@ impl Metal4Renderer {
                             let _: () = msg_send![encoder, endEncoding];
 
                             // Ensure intermediate textures exist
-                            let size: CGSize = msg_send![self.layer, drawableSize];
+                            let size = self.layer.drawableSize();
                             let drawable_px = Size { width: DevicePixels(size.width as i32), height: DevicePixels(size.height as i32) };
                             self.update_path_intermediate_textures(drawable_px);
 
@@ -721,8 +713,7 @@ impl Metal4Renderer {
                             let _: () = msg_send![encoder, endEncoding];
                             let pass_desc2 = MTLRenderPassDescriptor::new();
                             let color02 = pass_desc2.colorAttachments().objectAtIndexedSubscript(0);
-                            let tex_ref2: &ProtocolObject<dyn objc2_metal::MTLTexture> = unsafe { &*(texture as *mut ProtocolObject<dyn objc2_metal::MTLTexture>) };
-                            color02.setTexture(Some(tex_ref2));
+                            color02.setTexture(Some(&tex_ret));
                             color02.setLoadAction(MTLLoadAction::Load);
                             color02.setStoreAction(MTLStoreAction::Store);
                             encoder = msg_send![command_buffer, renderCommandEncoderWithDescriptor: Retained::as_ptr(&pass_desc2) as *mut Object];
@@ -886,14 +877,14 @@ impl Metal4Renderer {
                 // Submit and present via MTL4 command queue
                 unsafe {
                     // Wait for drawable availability
-                    let _: () = msg_send![self.command_queue, waitForDrawable: drawable];
+                    let _: () = msg_send![self.command_queue, waitForDrawable: Retained::as_ptr(&drawable) as *mut Object];
                     // Commit buffer list (single buffer)
                     let mut cb = command_buffer;
                     let ptr_to_cb: *mut *mut Object = &mut cb;
                     let _: () = msg_send![self.command_queue, commit: ptr_to_cb count: 1usize];
                     // Signal drawable and present
-                    let _: () = msg_send![self.command_queue, signalDrawable: drawable];
-                    let _: () = msg_send![drawable, present];
+                    let _: () = msg_send![self.command_queue, signalDrawable: Retained::as_ptr(&drawable) as *mut Object];
+                    drawable.present();
                     // Signal shared event for this frame
                     let _: () = msg_send![self.command_queue, signalEvent: self.shared_event value: self.frame_number];
                 }
