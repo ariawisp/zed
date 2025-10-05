@@ -13,9 +13,12 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
     MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice,
+    MTLLibrary, MTLFunction,
     MTLClearColor, MTLLoadAction, MTLPixelFormat, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLStoreAction,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLStoreAction, MTLBlendOperation,
+    MTLBlendFactor,
 };
+use objc2_metal::{MTL4CompilerDescriptor, MTL4LibraryFunctionDescriptor};
 use objc2_metal::MTLTexture; // bring trait methods like width/height/pixelFormat into scope
 use objc2_quartz_core::CAMetalLayer;
 use objc2_core_foundation::CGSize;
@@ -147,19 +150,13 @@ impl Metal4Renderer {
     const SHADERS_SOURCE_FILE: &'static str = include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
 
     #[allow(unused)]
-    fn build_shader_library(device: &Retained<ProtocolObject<dyn MTLDevice>>) -> *mut Object {
+    fn build_shader_library(
+        device: &Retained<ProtocolObject<dyn MTLDevice>>,
+    ) -> Retained<ProtocolObject<dyn MTLLibrary>> {
         // Prefer stitched shaders when available; otherwise stitch at runtime
         #[cfg(feature = "runtime_shaders")]
         {
-            unsafe {
-                let src = Self::SHADERS_SOURCE_FILE;
-                let ns = NSString::from_str(src);
-                // Use typed newLibraryWithSource_options_error
-                let lib = device
-                    .newLibraryWithSource_options_error(&ns, None)
-                    .expect("failed to build MSL 4.0 library");
-                Retained::as_ptr(&lib) as *mut Object
-            }
+            unsafe { device.newLibraryWithSource_options_error(&NSString::from_str(Self::SHADERS_SOURCE_FILE), None).expect("failed to build MSL 4.0 library") }
         }
         #[cfg(not(feature = "runtime_shaders"))]
         {
@@ -173,13 +170,7 @@ impl Metal4Renderer {
                 s.push_str(shader_src);
                 s
             };
-            unsafe {
-                let ns = NSString::from_str(&combined);
-                let lib = device
-                    .newLibraryWithSource_options_error(&ns, None)
-                    .expect("failed to build MSL 4.0 library");
-                Retained::as_ptr(&lib) as *mut Object
-            }
+            unsafe { device.newLibraryWithSource_options_error(&NSString::from_str(&combined), None).expect("failed to build MSL 4.0 library") }
         }
     }
 
@@ -191,57 +182,50 @@ impl Metal4Renderer {
 
     fn build_render_pso(
         device: &Retained<ProtocolObject<dyn MTLDevice>>,
-        library: *mut Object,
+        library: &Retained<ProtocolObject<dyn MTLLibrary>>,
         label: &str,
         vertex_name: &str,
         fragment_name: &str,
         pixel_format: MTLPixelFormat,
     ) -> *mut Object {
         unsafe {
-            let dev_ptr = Retained::as_ptr(device) as *mut Object;
-            // Create function descriptors
-            let vfd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
-            let ffd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
-            let vname = NSString::from_str(vertex_name);
-            let fname = NSString::from_str(fragment_name);
-            let _: () = msg_send![vfd, setName: vname];
-            let _: () = msg_send![ffd, setName: fname];
-            let _: () = msg_send![vfd, setLibrary: library];
-            let _: () = msg_send![ffd, setLibrary: library];
+            // Create optional MTL4 compiler (validates availability)
+            let _compiler = device
+                .newCompilerWithDescriptor_error(&MTL4CompilerDescriptor::new())
+                .expect("MTL4Compiler");
 
-            // Build pipeline descriptor
-            let rpdesc: *mut Object = msg_send![class!(MTL4RenderPipelineDescriptor), new];
-            let lbl = NSString::from_str(label);
-            let _: () = msg_send![rpdesc, setLabel: lbl];
-            let _: () = msg_send![rpdesc, setVertexFunctionDescriptor: vfd];
-            let _: () = msg_send![rpdesc, setFragmentFunctionDescriptor: ffd];
+            // Build legacy pipeline descriptor with typed API
+            let rpdesc = MTLRenderPipelineDescriptor::new();
+            rpdesc.setLabel(Some(&NSString::from_str(label)));
 
-            // Color attachment 0 format + blending like existing pipeline
-            let color_atts: *mut Object = msg_send![rpdesc, colorAttachments];
-            let color0: *mut Object = msg_send![color_atts, objectAtIndexedSubscript: 0usize];
-            let _: () = msg_send![color0, setPixelFormat: pixel_format];
-            let _: () = msg_send![color0, setBlendingEnabled: YES];
-            let _: () = msg_send![color0, setRgbBlendOperation: 0u64]; // MTLBlendOperationAdd
-            let _: () = msg_send![color0, setAlphaBlendOperation: 0u64];
-            // Source: SrcAlpha, Dest: OneMinusSrcAlpha (numeric constants)
-            let _: () = msg_send![color0, setSourceRGBBlendFactor: 7u64];
-            let _: () = msg_send![color0, setSourceAlphaBlendFactor: 1u64];
-            let _: () = msg_send![color0, setDestinationRGBBlendFactor: 9u64];
-            let _: () = msg_send![color0, setDestinationAlphaBlendFactor: 1u64];
+            if let Some(vf) = library.newFunctionWithName(&NSString::from_str(vertex_name)) {
+                rpdesc.setVertexFunction(Some(&*vf));
+            }
+            if let Some(ff) = library.newFunctionWithName(&NSString::from_str(fragment_name)) {
+                rpdesc.setFragmentFunction(Some(&*ff));
+            }
 
-            // Build compiler and create pipeline state
-            let comp_desc: *mut Object = msg_send![class!(MTL4CompilerDescriptor), new];
-            let mut cerr: *mut Object = core::ptr::null_mut();
-            let compiler: *mut Object = msg_send![dev_ptr, newCompilerWithDescriptor: comp_desc error: &mut cerr];
-            let mut perr: *mut Object = core::ptr::null_mut();
-            let pso: *mut Object = msg_send![compiler, newRenderPipelineStateWithDescriptor: rpdesc error: &mut perr];
-            pso
+            let color_atts = rpdesc.colorAttachments();
+            let color0 = color_atts.objectAtIndexedSubscript(0);
+            color0.setPixelFormat(pixel_format);
+            color0.setBlendingEnabled(true);
+            color0.setRgbBlendOperation(MTLBlendOperation::Add);
+            color0.setAlphaBlendOperation(MTLBlendOperation::Add);
+            color0.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+            color0.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+            color0.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            color0.setDestinationAlphaBlendFactor(MTLBlendFactor::One);
+
+            let pso = device
+                .newRenderPipelineStateWithDescriptor_error(&rpdesc)
+                .expect("newRenderPipelineStateWithDescriptor:error:");
+            Retained::as_ptr(&pso) as *mut Object
         }
     }
 
     fn build_render_pso_with_samples(
         device: &Retained<ProtocolObject<dyn MTLDevice>>,
-        library: *mut Object,
+        library: &Retained<ProtocolObject<dyn MTLLibrary>>,
         label: &str,
         vertex_name: &str,
         fragment_name: &str,
@@ -249,40 +233,36 @@ impl Metal4Renderer {
         sample_count: u32,
     ) -> *mut Object {
         unsafe {
-            let dev_ptr = Retained::as_ptr(device) as *mut Object;
-            let vfd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
-            let ffd: *mut Object = msg_send![class!(MTL4LibraryFunctionDescriptor), new];
-            let vname = NSString::from_str(vertex_name);
-            let fname = NSString::from_str(fragment_name);
-            let _: () = msg_send![vfd, setName: vname];
-            let _: () = msg_send![ffd, setName: fname];
-            let _: () = msg_send![vfd, setLibrary: library];
-            let _: () = msg_send![ffd, setLibrary: library];
+            let rpdesc = MTLRenderPipelineDescriptor::new();
+            rpdesc.setLabel(Some(&NSString::from_str(label)));
+            if let Some(vf) = library.newFunctionWithName(&NSString::from_str(vertex_name)) {
+                rpdesc.setVertexFunction(Some(&*vf));
+            }
+            if let Some(ff) = library.newFunctionWithName(&NSString::from_str(fragment_name)) {
+                rpdesc.setFragmentFunction(Some(&*ff));
+            }
+            rpdesc.setRasterSampleCount(sample_count as usize);
 
-            let rpdesc: *mut Object = msg_send![class!(MTL4RenderPipelineDescriptor), new];
-            let lbl = NSString::from_str(label);
-            let _: () = msg_send![rpdesc, setLabel: lbl];
-            let _: () = msg_send![rpdesc, setVertexFunctionDescriptor: vfd];
-            let _: () = msg_send![rpdesc, setFragmentFunctionDescriptor: ffd];
-            let _: () = msg_send![rpdesc, setRasterSampleCount: sample_count as usize];
+            let color_atts = rpdesc.colorAttachments();
+            let color0 = color_atts.objectAtIndexedSubscript(0);
+            color0.setPixelFormat(pixel_format);
+            color0.setBlendingEnabled(true);
+            color0.setRgbBlendOperation(MTLBlendOperation::Add);
+            color0.setAlphaBlendOperation(MTLBlendOperation::Add);
+            color0.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
+            color0.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+            color0.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            color0.setDestinationAlphaBlendFactor(MTLBlendFactor::One);
 
-            let color_atts: *mut Object = msg_send![rpdesc, colorAttachments];
-            let color0: *mut Object = msg_send![color_atts, objectAtIndexedSubscript: 0usize];
-            let _: () = msg_send![color0, setPixelFormat: pixel_format];
-            let _: () = msg_send![color0, setBlendingEnabled: YES];
-            let _: () = msg_send![color0, setRgbBlendOperation: 0u64];
-            let _: () = msg_send![color0, setAlphaBlendOperation: 0u64];
-            let _: () = msg_send![color0, setSourceRGBBlendFactor: 7u64];
-            let _: () = msg_send![color0, setSourceAlphaBlendFactor: 1u64];
-            let _: () = msg_send![color0, setDestinationRGBBlendFactor: 9u64];
-            let _: () = msg_send![color0, setDestinationAlphaBlendFactor: 1u64];
+            // Ensure MTL4Compiler is constructible
+            let _compiler = device
+                .newCompilerWithDescriptor_error(&MTL4CompilerDescriptor::new())
+                .expect("MTL4Compiler");
 
-            let comp_desc: *mut Object = msg_send![class!(MTL4CompilerDescriptor), new];
-            let mut cerr: *mut Object = core::ptr::null_mut();
-            let compiler: *mut Object = msg_send![dev_ptr, newCompilerWithDescriptor: comp_desc error: &mut cerr];
-            let mut perr: *mut Object = core::ptr::null_mut();
-            let pso: *mut Object = msg_send![compiler, newRenderPipelineStateWithDescriptor: rpdesc error: &mut perr];
-            pso
+            let pso = device
+                .newRenderPipelineStateWithDescriptor_error(&rpdesc)
+                .expect("newRenderPipelineStateWithDescriptor:error:");
+            Retained::as_ptr(&pso) as *mut Object
         }
     }
 
@@ -356,7 +336,7 @@ impl Metal4Renderer {
         // Create PSOs for quads and monochrome sprites using MTL4Compiler
         let quads_pso = Self::build_render_pso(
             &device,
-            library,
+            &library,
             "quads",
             "quad_vertex",
             "quad_fragment",
@@ -364,7 +344,7 @@ impl Metal4Renderer {
         );
         let mono_sprites_pso = Self::build_render_pso(
             &device,
-            library,
+            &library,
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
@@ -375,7 +355,7 @@ impl Metal4Renderer {
         let path_sample_count = 4u32;
         let path_raster_pso = Self::build_render_pso_with_samples(
             &device,
-            library,
+            &library,
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
@@ -384,7 +364,7 @@ impl Metal4Renderer {
         );
         let path_sprites_pso = Self::build_render_pso(
             &device,
-            library,
+            &library,
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
@@ -392,7 +372,7 @@ impl Metal4Renderer {
         );
         let underlines_pso = Self::build_render_pso(
             &device,
-            library,
+            &library,
             "underlines",
             "underline_vertex",
             "underline_fragment",
@@ -400,7 +380,7 @@ impl Metal4Renderer {
         );
         let surfaces_pso = Self::build_render_pso(
             &device,
-            library,
+            &library,
             "surfaces",
             "surface_vertex",
             "surface_fragment",
