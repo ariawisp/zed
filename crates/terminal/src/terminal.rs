@@ -1519,21 +1519,28 @@ impl Terminal {
         }
 
         #[cfg(feature = "ghostty-backend")]
-        if let Some(bytes) = self.encode_keystroke_via_ghostty(keystroke, alt_is_meta) {
-            self.input(bytes);
-            return true;
+        {
+            if let Some(bytes) = self.encode_keystroke_via_ghostty(keystroke, alt_is_meta) {
+                self.input(bytes);
+                return true;
+            }
+            // No fallback: all terminal input goes through libghostty
+            return false;
         }
 
-        // Keep default terminal behavior
-        let esc = to_esc_str(keystroke, &self.last_content.mode, alt_is_meta);
-        if let Some(esc) = esc {
-            match esc {
-                Cow::Borrowed(string) => self.input(string.as_bytes()),
-                Cow::Owned(string) => self.input(string.into_bytes()),
-            };
-            true
-        } else {
-            false
+        #[cfg(not(feature = "ghostty-backend"))]
+        {
+            // Default terminal behavior
+            let esc = to_esc_str(keystroke, &self.last_content.mode, alt_is_meta);
+            if let Some(esc) = esc {
+                match esc {
+                    Cow::Borrowed(string) => self.input(string.as_bytes()),
+                    Cow::Owned(string) => self.input(string.into_bytes()),
+                };
+                true
+            } else {
+                false
+            }
         }
     }
 
@@ -1564,7 +1571,7 @@ impl Terminal {
         if text_opt.is_none() && ks.key.chars().count() == 1 {
             text_opt = std::ffi::CString::new(ks.key.as_str()).ok();
         }
-        let text_c = match &text_opt { Some(s) => s.as_c_str(), None => std::ffi::CStr::from_bytes_with_nul(b"\0").unwrap() };
+        // We route both text and physical keys through libghostty.
         let mut mods_bits = ghostty_mods_bits(ks.modifiers) as u32;
         // Option-as-Meta: map Alt to Super (platform) if requested
         if alt_is_meta && ks.modifiers.alt && !ks.modifiers.platform {
@@ -1582,10 +1589,98 @@ impl Terminal {
         ev.set_consumed_mods(0 as ginput::Mods);
         // Prefer typed text when available
         if let Some(s) = &text_opt { ev.set_utf8(s.to_str().unwrap_or("")); } else { ev.clear_utf8(); }
-        // Note: We don't currently map platform-native keycodes to GhosttyKey.
-        // For non-text keys, Ghostty may return no bytes and we fall back.
+        // Map non-text key names to Ghostty physical keys so upstream can encode
+        if let Some(k) = Self::ghostty_key_for_name(ks.key.as_str()) {
+            ev.set_key(k);
+        }
+        // Note: upstream key encoder determines exact sequences based on terminal modes.
         let bytes = b.encode_key_event(&ev);
         if bytes.is_empty() { None } else { Some(bytes) }
+    }
+
+    #[cfg(feature = "ghostty-backend")]
+    fn ghostty_key_for_name(name: &str) -> Option<libghostty::input::Key> {
+        use libghostty::input::Key as K;
+        let n = name.to_ascii_lowercase();
+        Some(match n.as_str() {
+            // Arrows
+            "left" | "arrowleft" => K::GHOSTTY_KEY_ARROW_LEFT,
+            "right" | "arrowright" => K::GHOSTTY_KEY_ARROW_RIGHT,
+            "up" | "arrowup" => K::GHOSTTY_KEY_ARROW_UP,
+            "down" | "arrowdown" => K::GHOSTTY_KEY_ARROW_DOWN,
+            // Navigation
+            "home" => K::GHOSTTY_KEY_HOME,
+            "end" => K::GHOSTTY_KEY_END,
+            "pageup" | "page_up" => K::GHOSTTY_KEY_PAGE_UP,
+            "pagedown" | "page_down" => K::GHOSTTY_KEY_PAGE_DOWN,
+            "insert" => K::GHOSTTY_KEY_INSERT,
+            // Editing/control
+            "backspace" => K::GHOSTTY_KEY_BACKSPACE,
+            "delete" => K::GHOSTTY_KEY_DELETE,
+            "tab" => K::GHOSTTY_KEY_TAB,
+            "escape" | "esc" => K::GHOSTTY_KEY_ESCAPE,
+            "enter" | "return" => K::GHOSTTY_KEY_ENTER,
+            "space" | "spacebar" => K::GHOSTTY_KEY_SPACE,
+            // Function keys f1..f25
+            s if s.starts_with('f') && s.len() <= 3 => {
+                match s[1..].parse::<u8>().ok() {
+                    Some(1) => K::GHOSTTY_KEY_F1,
+                    Some(2) => K::GHOSTTY_KEY_F2,
+                    Some(3) => K::GHOSTTY_KEY_F3,
+                    Some(4) => K::GHOSTTY_KEY_F4,
+                    Some(5) => K::GHOSTTY_KEY_F5,
+                    Some(6) => K::GHOSTTY_KEY_F6,
+                    Some(7) => K::GHOSTTY_KEY_F7,
+                    Some(8) => K::GHOSTTY_KEY_F8,
+                    Some(9) => K::GHOSTTY_KEY_F9,
+                    Some(10) => K::GHOSTTY_KEY_F10,
+                    Some(11) => K::GHOSTTY_KEY_F11,
+                    Some(12) => K::GHOSTTY_KEY_F12,
+                    Some(13) => K::GHOSTTY_KEY_F13,
+                    Some(14) => K::GHOSTTY_KEY_F14,
+                    Some(15) => K::GHOSTTY_KEY_F15,
+                    Some(16) => K::GHOSTTY_KEY_F16,
+                    Some(17) => K::GHOSTTY_KEY_F17,
+                    Some(18) => K::GHOSTTY_KEY_F18,
+                    Some(19) => K::GHOSTTY_KEY_F19,
+                    Some(20) => K::GHOSTTY_KEY_F20,
+                    Some(21) => K::GHOSTTY_KEY_F21,
+                    Some(22) => K::GHOSTTY_KEY_F22,
+                    Some(23) => K::GHOSTTY_KEY_F23,
+                    Some(24) => K::GHOSTTY_KEY_F24,
+                    Some(25) => K::GHOSTTY_KEY_F25,
+                    _ => return None,
+                }
+            }
+            // Letters a..z
+            "a" => K::GHOSTTY_KEY_A, "b" => K::GHOSTTY_KEY_B, "c" => K::GHOSTTY_KEY_C,
+            "d" => K::GHOSTTY_KEY_D, "e" => K::GHOSTTY_KEY_E, "f" => K::GHOSTTY_KEY_F,
+            "g" => K::GHOSTTY_KEY_G, "h" => K::GHOSTTY_KEY_H, "i" => K::GHOSTTY_KEY_I,
+            "j" => K::GHOSTTY_KEY_J, "k" => K::GHOSTTY_KEY_K, "l" => K::GHOSTTY_KEY_L,
+            "m" => K::GHOSTTY_KEY_M, "n" => K::GHOSTTY_KEY_N, "o" => K::GHOSTTY_KEY_O,
+            "p" => K::GHOSTTY_KEY_P, "q" => K::GHOSTTY_KEY_Q, "r" => K::GHOSTTY_KEY_R,
+            "s" => K::GHOSTTY_KEY_S, "t" => K::GHOSTTY_KEY_T, "u" => K::GHOSTTY_KEY_U,
+            "v" => K::GHOSTTY_KEY_V, "w" => K::GHOSTTY_KEY_W, "x" => K::GHOSTTY_KEY_X,
+            "y" => K::GHOSTTY_KEY_Y, "z" => K::GHOSTTY_KEY_Z,
+            // Digits
+            "0" => K::GHOSTTY_KEY_DIGIT_0, "1" => K::GHOSTTY_KEY_DIGIT_1, "2" => K::GHOSTTY_KEY_DIGIT_2,
+            "3" => K::GHOSTTY_KEY_DIGIT_3, "4" => K::GHOSTTY_KEY_DIGIT_4, "5" => K::GHOSTTY_KEY_DIGIT_5,
+            "6" => K::GHOSTTY_KEY_DIGIT_6, "7" => K::GHOSTTY_KEY_DIGIT_7, "8" => K::GHOSTTY_KEY_DIGIT_8,
+            "9" => K::GHOSTTY_KEY_DIGIT_9,
+            // Punctuation
+            "comma" => K::GHOSTTY_KEY_COMMA,
+            "period" | "dot" => K::GHOSTTY_KEY_PERIOD,
+            "minus" | "hyphen" => K::GHOSTTY_KEY_MINUS,
+            "equal" | "equals" => K::GHOSTTY_KEY_EQUAL,
+            "slash" => K::GHOSTTY_KEY_SLASH,
+            "backslash" => K::GHOSTTY_KEY_BACKSLASH,
+            "bracketleft" | "leftbracket" => K::GHOSTTY_KEY_BRACKET_LEFT,
+            "bracketright" | "rightbracket" => K::GHOSTTY_KEY_BRACKET_RIGHT,
+            "quote" | "apostrophe" => K::GHOSTTY_KEY_QUOTE,
+            "semicolon" => K::GHOSTTY_KEY_SEMICOLON,
+            "backquote" | "grave" | "backtick" => K::GHOSTTY_KEY_BACKQUOTE,
+            _ => return None,
+        })
     }
 
     #[cfg(all(feature = "ghostty-backend", target_os = "macos"))]
