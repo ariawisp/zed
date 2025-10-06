@@ -1572,20 +1572,19 @@ impl Terminal {
             mods_bits &= !(1 << 2);
             mods_bits |= 1 << 3;
         }
-        let mods_enum: ginput::Mods = unsafe { std::mem::transmute(mods_bits) };
-        let native_keycode = Self::mac_native_keycode_for_name(ks.key.as_str());
-        // ghostty_input_action_e per ghostty.h: RELEASE=0, PRESS=1, REPEAT=2
-        let action: ginput::Action = unsafe { std::mem::transmute(if pressed { 1u32 } else { 0u32 }) };
-        let mut ev = ginput::KeyEvent {
-            action,
-            mods: mods_enum,
-            consumed_mods: unsafe { std::mem::transmute(0u32) },
-            keycode: native_keycode,
-            text: text_c.as_ptr(),
-            unshifted_codepoint: 0,
-            composing: false,
-        };
-        let bytes = b.encode_key_event(unsafe { &*(&ev as *const _) });
+        // Build upstream Ghostty key event (handle-based API)
+        let mut ev = ginput::KeyEvent::new().ok()?;
+        // Action: 0=release, 1=press
+        let action: ginput::Action = if pressed { 1 } else { 0 };
+        ev.set_action(action);
+        // Mods: GhosttyMods bitmask (lower 16 bits)
+        ev.set_mods((mods_bits & 0xFFFF) as ginput::Mods);
+        ev.set_consumed_mods(0 as ginput::Mods);
+        // Prefer typed text when available
+        if let Some(s) = &text_opt { ev.set_utf8(s.to_str().unwrap_or("")); } else { ev.clear_utf8(); }
+        // Note: We don't currently map platform-native keycodes to GhosttyKey.
+        // For non-text keys, Ghostty may return no bytes and we fall back.
+        let bytes = b.encode_key_event(&ev);
         if bytes.is_empty() { None } else { Some(bytes) }
     }
 

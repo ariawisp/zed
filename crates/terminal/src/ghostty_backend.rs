@@ -45,15 +45,15 @@ impl GhosttyBackend {
     pub fn encode_key(&self, ev: &input::KeyEvent) -> Vec<u8> { input::encode_key(&self.vt, ev) }
 
     pub fn encode_mouse_move(&self, row: u16, col: u16, mods: i32) -> Vec<u8> {
-        input::encode_mouse_move(&self.vt, row, col, mods)
+        input::encode_mouse_move(&self.vt, row, col, mods as u32)
     }
 
     pub fn encode_mouse_button(&self, button: i32, pressed: bool, row: u16, col: u16, mods: i32) -> Vec<u8> {
-        input::encode_mouse_button(&self.vt, button, pressed, row, col, mods)
+        input::encode_mouse_button(&self.vt, button, pressed, row, col, mods as u32)
     }
 
     pub fn encode_scroll(&self, dx: f64, dy: f64, row: u16, col: u16, mods: i32) -> Vec<u8> {
-        input::encode_scroll(&self.vt, dx, dy, row, col, mods)
+        input::encode_scroll(&self.vt, dx, dy, row, col, mods as u32)
     }
 
     pub fn encode_key_event(&self, ev: &input::KeyEvent) -> Vec<u8> { input::encode_key(&self.vt, ev) }
