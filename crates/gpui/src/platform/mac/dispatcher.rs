@@ -4,11 +4,7 @@
 
 use crate::{PlatformDispatcher, TaskLabel};
 use async_task::Runnable;
-use objc::{
-    class, msg_send,
-    runtime::{BOOL, YES},
-    sel, sel_impl,
-};
+// No direct objc macros needed; using objc2 for messaging
 use parking::{Parker, Unparker};
 use parking_lot::Mutex;
 use std::{
@@ -49,8 +45,8 @@ impl MacDispatcher {
 
 impl PlatformDispatcher for MacDispatcher {
     fn is_main_thread(&self) -> bool {
-        let is_main_thread: BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
-        is_main_thread == YES
+        // Use objc2 for class method; returns a Rust bool
+        unsafe { objc2::msg_send![objc2::class!(NSThread), isMainThread] }
     }
 
     fn dispatch(&self, runnable: Runnable, _: Option<TaskLabel>) {

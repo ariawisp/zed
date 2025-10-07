@@ -6,11 +6,8 @@ use crate::{
 };
 use anyhow::Result;
 use block::ConcreteBlock;
-use cocoa::{
-    base::{NO, YES},
-    foundation::{NSSize, NSUInteger},
-    quartzcore::AutoresizingMask,
-};
+use cocoa::base::{NO, YES};
+use objc2_foundation::NSSize;
 
 use core_foundation::base::TCFType;
 use core_video::{
@@ -147,11 +144,11 @@ impl MetalRenderer {
         unsafe {
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
-            let _: () = msg_send![
-                &*layer,
-                setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                    | AutoresizingMask::HEIGHT_SIZABLE
-            ];
+            // Use CAAutoresizingMask bit values directly to avoid deprecated Cocoa wrapper
+            const K_LAYER_WIDTH_SIZABLE: u32 = 1 << 1;
+            const K_LAYER_HEIGHT_SIZABLE: u32 = 1 << 4;
+            let mask: u32 = K_LAYER_WIDTH_SIZABLE | K_LAYER_HEIGHT_SIZABLE;
+            let _: () = msg_send![&*layer, setAutoresizingMask: mask];
         }
         #[cfg(feature = "runtime_shaders")]
         let library = device
@@ -542,7 +539,7 @@ impl MetalRenderer {
 
         instance_buffer.metal_buffer.did_modify_range(NSRange {
             location: 0,
-            length: instance_offset as NSUInteger,
+            length: instance_offset as u64,
         });
         Ok(command_buffer.to_owned())
     }

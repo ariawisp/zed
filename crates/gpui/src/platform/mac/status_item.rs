@@ -10,11 +10,10 @@ use crate::{
     },
     Scene,
 };
-use cocoa::{
-    appkit::{NSScreen, NSSquareStatusItemLength, NSStatusBar, NSStatusItem, NSView, NSWindow},
-    base::{id, nil, YES},
-    foundation::{NSPoint, NSRect, NSSize},
-};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc::runtime::Object;
+use objc2_app_kit::{NSStatusBar, NSStatusItem};
+// Use raw Objective-C object pointers directly where needed
 use ctor::ctor;
 use foreign_types::ForeignTypeRef;
 use objc::{
@@ -48,47 +47,47 @@ unsafe fn build_classes() {
 
         decl.add_method(
             sel!(mouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(mouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(rightMouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(rightMouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(otherMouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(otherMouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(mouseMoved:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(mouseDragged:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(scrollWheel:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(flagsChanged:),
-            handle_view_event as extern "C" fn(&Object, Sel, id),
+            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
         );
         decl.add_method(
             sel!(makeBackingLayer),
-            make_backing_layer as extern "C" fn(&Object, Sel) -> id,
+            make_backing_layer as extern "C" fn(&Object, Sel) -> *mut Object,
         );
         decl.add_method(
             sel!(viewDidChangeEffectiveAppearance),
@@ -98,7 +97,7 @@ unsafe fn build_classes() {
         decl.add_protocol(Protocol::get("CALayerDelegate").unwrap());
         decl.add_method(
             sel!(displayLayer:),
-            display_layer as extern "C" fn(&Object, Sel, id),
+            display_layer as extern "C" fn(&Object, Sel, *mut Object),
         );
 
         decl.register()
@@ -120,12 +119,13 @@ impl StatusItem {
     pub fn add(fonts: Arc<dyn FontSystem>) -> Self {
         unsafe {
             let renderer = Renderer::new(false, fonts);
-            let status_bar = NSStatusBar::systemStatusBar(nil);
-            let native_item =
-                StrongPtr::retain(status_bar.statusItemWithLength_(NSSquareStatusItemLength));
+            // Create a status item with square length (-2.0 per AppKit docs)
+            let status_bar = NSStatusBar::systemStatusBar();
+            let status_item = status_bar.statusItemWithLength(-2.0);
+            let native_item = StrongPtr::retain(status_item.as_ptr() as *mut Object);
 
             let button = native_item.button();
-            let _: () = msg_send![button, setHidden: YES];
+            let _: () = msg_send![button, setHidden: true];
 
             let native_view = msg_send![VIEW_CLASS, alloc];
             let state = Rc::new(RefCell::new(StatusItemState {
@@ -138,22 +138,21 @@ impl StatusItem {
             }));
 
             let parent_view = button.superview().superview();
-            NSView::initWithFrame_(
-                native_view,
-                NSRect::new(NSPoint::new(0., 0.), NSView::frame(parent_view).size),
-            );
+            let parent_frame: NSRect = msg_send![parent_view, frame];
+            let _: *mut Object = msg_send![native_view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), parent_frame.size)];
             (*native_view).set_ivar(
                 STATE_IVAR,
                 Weak::into_raw(Rc::downgrade(&state)) as *const c_void,
             );
-            native_view.setWantsBestResolutionOpenGLSurface_(YES);
-            native_view.setWantsLayer(YES);
-            let _: () = msg_send![
-                native_view,
-                setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize
-            ];
+            let _: () = msg_send![native_view, setWantsBestResolutionOpenGLSurface: true];
+            let _: () = msg_send![native_view, setWantsLayer: true];
+            let _: () = msg_send![native_view, setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize];
 
-            parent_view.addSubview_(native_view);
+            {
+                let pv: &objc2_app_kit::NSView = &*(parent_view as *mut objc2_app_kit::NSView);
+                let nv: &objc2_app_kit::NSView = &*(native_view as *mut objc2_app_kit::NSView);
+                pv.addSubview(nv);
+            }
 
             {
                 let state = state.borrow();
@@ -197,17 +196,16 @@ impl platform::Window for StatusItem {
 
     fn appearance(&self) -> platform::Appearance {
         unsafe {
-            let appearance: id =
+            let appearance: *mut Object =
                 msg_send![self.0.borrow().native_item.button(), effectiveAppearance];
-            platform::Appearance::from_native(appearance)
+            platform::Appearance::from_native(appearance as *mut objc2::runtime::AnyObject)
         }
     }
 
     fn screen(&self) -> Rc<dyn platform::Screen> {
         unsafe {
-            Rc::new(Screen {
-                native_screen: self.0.borrow().native_window().screen(),
-            })
+            let window = self.0.borrow().native_window();
+            Rc::new(Screen { native_screen: msg_send![window, screen] })
         }
     }
 
@@ -257,7 +255,7 @@ impl platform::Window for StatusItem {
     fn present_scene(&mut self, scene: Scene) {
         self.0.borrow_mut().scene = Some(scene);
         unsafe {
-            let _: () = msg_send![*self.0.borrow().native_view, setNeedsDisplay: YES];
+            let _: () = msg_send![*self.0.borrow().native_view, setNeedsDisplay: true];
         }
     }
 
@@ -294,8 +292,13 @@ impl StatusItemState {
     fn bounds(&self) -> WindowBounds {
         unsafe {
             let window: id = self.native_window();
-            let screen_frame = window.screen().visibleFrame();
-            let window_frame = NSWindow::frame(window);
+            let win: &objc2_app_kit::NSWindow = &*(window as *mut objc2_app_kit::NSWindow);
+            let screen_frame: NSRect = if let Some(screen) = win.screen() {
+                screen.visibleFrame()
+            } else {
+                NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))
+            };
+            let window_frame: NSRect = win.frame();
             let origin = vec2f(
                 window_frame.origin.x as f32,
                 (window_frame.origin.y - screen_frame.size.height - window_frame.size.height)
@@ -311,20 +314,26 @@ impl StatusItemState {
 
     fn content_size(&self) -> Vector2F {
         unsafe {
-            let NSSize { width, height, .. } =
-                NSView::frame(self.native_item.button().superview().superview()).size;
+            let parent = self.native_item.button().superview().superview();
+            let rect: NSRect = msg_send![parent, frame];
+            let NSSize { width, height } = rect.size;
             vec2f(width as f32, height as f32)
         }
     }
 
     fn scale_factor(&self) -> f32 {
         unsafe {
-            let window: id = msg_send![self.native_item.button(), window];
-            NSScreen::backingScaleFactor(window.screen()) as f32
+            let window: *mut Object = msg_send![self.native_item.button(), window];
+            let win: &objc2_app_kit::NSWindow = &*(window as *mut objc2_app_kit::NSWindow);
+            if let Some(screen) = win.screen() {
+                screen.backingScaleFactor() as f32
+            } else {
+                2.0
+            }
         }
     }
 
-    pub fn native_window(&self) -> id {
+    pub fn native_window(&self) -> *mut Object {
         unsafe { msg_send![self.native_item.button(), window] }
     }
 }
@@ -337,13 +346,12 @@ extern "C" fn dealloc_view(this: &Object, _: Sel) {
     }
 }
 
-extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
+extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: *mut Object) {
     unsafe {
         if let Some(state) = get_state(this).upgrade() {
             let mut state_borrow = state.as_ref().borrow_mut();
-            if let Some(event) =
-                Event::from_native(native_event, Some(state_borrow.content_size().y()))
-            {
+            let ev: &objc2_app_kit::NSEvent = &*(native_event as *mut objc2_app_kit::NSEvent);
+            if let Some(event) = Event::from_native(ev, Some(state_borrow.content_size().y())) {
                 if let Some(mut callback) = state_borrow.event_callback.take() {
                     drop(state_borrow);
                     callback(event);
@@ -354,16 +362,16 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     }
 }
 
-extern "C" fn make_backing_layer(this: &Object, _: Sel) -> id {
+extern "C" fn make_backing_layer(this: &Object, _: Sel) -> *mut Object {
     if let Some(state) = unsafe { get_state(this).upgrade() } {
         let state = state.borrow();
-        state.renderer.layer().as_ptr() as id
+        state.renderer.layer().as_ptr() as *mut Object
     } else {
-        nil
+        std::ptr::null_mut()
     }
 }
 
-extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
+extern "C" fn display_layer(this: &Object, _: Sel, _: *mut Object) {
     unsafe {
         if let Some(state) = get_state(this).upgrade() {
             let mut state = state.borrow_mut();

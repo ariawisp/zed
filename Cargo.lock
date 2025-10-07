@@ -2331,7 +2331,7 @@ dependencies = [
  "mint",
  "naga",
  "objc2 0.6.3",
- "objc2-app-kit 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-metal",
@@ -7126,6 +7126,7 @@ dependencies = [
  "blade-macros",
  "blade-util",
  "block",
+ "block2",
  "bytemuck",
  "calloop",
  "calloop-wayland-source",
@@ -7162,6 +7163,7 @@ dependencies = [
  "num_cpus",
  "objc",
  "objc2 0.6.3",
+ "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-metal",
@@ -10558,24 +10560,14 @@ dependencies = [
 [[package]]
 name = "objc2-app-kit"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
+source = "git+https://github.com/madsmtm/objc2?rev=065b00daf7056bb3cb02de4bb12e26a560bd15aa#065b00daf7056bb3cb02de4bb12e26a560bd15aa"
 dependencies = [
  "bitflags 2.9.4",
+ "block2",
  "objc2 0.6.3",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-quartz-core",
-]
-
-[[package]]
-name = "objc2-app-kit"
-version = "0.3.2"
-source = "git+https://github.com/madsmtm/objc2?rev=065b00daf7056bb3cb02de4bb12e26a560bd15aa#065b00daf7056bb3cb02de4bb12e26a560bd15aa"
-dependencies = [
- "bitflags 2.9.4",
- "objc2 0.6.3",
- "objc2-foundation",
 ]
 
 [[package]]
@@ -10703,7 +10695,7 @@ source = "git+https://github.com/madsmtm/objc2?rev=065b00daf7056bb3cb02de4bb12e2
 dependencies = [
  "block2",
  "objc2 0.6.3",
- "objc2-app-kit 0.3.2 (git+https://github.com/madsmtm/objc2?rev=065b00daf7056bb3cb02de4bb12e26a560bd15aa)",
+ "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation",

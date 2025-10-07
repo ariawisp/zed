@@ -1275,26 +1275,25 @@ impl Window {
     /// Create a native NSView subview attached to the window for hosting custom renderers.
     /// Returns an opaque pointer to the created NSView (or null on failure).
     pub fn create_native_subview(&self, frame: Bounds<Pixels>) -> *mut std::ffi::c_void {
-        use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
         use raw_window_handle as rwh;
-        // macros/constants from objc
-        use objc::{class, msg_send, sel, sel_impl};
-        use objc::runtime::YES;
         unsafe {
-            // Disambiguate trait method versus inherent method with the same name.
             let handle = <Self as rwh::HasWindowHandle>::window_handle(self).unwrap();
             match handle.as_raw() {
                 rwh::RawWindowHandle::AppKit(h) => {
-                    let parent: id = h.ns_view.as_ptr() as id;
-                    let alloc: id = msg_send![class!(NSView), alloc];
+                    use objc2::MainThreadOnly;
+                    let mtm = objc2::MainThreadMarker::new().expect("NSView must be created on main thread");
+                    let parent: &objc2_app_kit::NSView = &*(h.ns_view.as_ptr() as *mut objc2_app_kit::NSView);
                     let rect = NSRect::new(
                         NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
                         NSSize::new(frame.size.width.0.into(), frame.size.height.0.into()),
                     );
-                    let view: id = msg_send![alloc, initWithFrame: rect];
-                    let _: () = msg_send![view, setWantsLayer: YES];
-                    let _: () = msg_send![parent, addSubview: view];
-                    view as *mut _
+                    let view = objc2_app_kit::NSView::initWithFrame(objc2_app_kit::NSView::alloc(mtm), rect);
+                    view.setWantsLayer(true);
+                    parent.addSubview(&view);
+                    // Return the raw pointer; parent retains it, so dropping our Retained is fine
+                    let raw: *const objc2_app_kit::NSView = objc2::rc::Retained::as_ptr(&view);
+                    raw as *mut std::ffi::c_void
                 }
                 _ => std::ptr::null_mut(),
             }
@@ -1303,29 +1302,24 @@ impl Window {
 
     /// Update the frame of a previously created native subview.
     pub fn set_native_subview_frame(&self, subview: *mut std::ffi::c_void, frame: Bounds<Pixels>) {
-        use cocoa::{appkit::NSView, base::id, foundation::{NSPoint, NSRect, NSSize}};
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
         unsafe {
             if subview.is_null() { return; }
-            // objc macros
-            use objc::{msg_send, sel, sel_impl};
-            let view: id = subview as id;
+            let view: &objc2_app_kit::NSView = &*(subview as *mut objc2_app_kit::NSView);
             let rect = NSRect::new(
                 NSPoint::new(frame.origin.x.0.into(), frame.origin.y.0.into()),
                 NSSize::new(frame.size.width.0.into(), frame.size.height.0.into()),
             );
-            let _: () = msg_send![view, setFrame: rect];
+            view.setFrame(rect);
         }
     }
 
     /// Remove a previously created native subview from the window.
     pub fn remove_native_subview(&self, subview: *mut std::ffi::c_void) {
-        use cocoa::{appkit::NSView, base::id};
         unsafe {
             if subview.is_null() { return; }
-            // objc macros
-            use objc::{msg_send, sel, sel_impl};
-            let view: id = subview as id;
-            let _: () = msg_send![view, removeFromSuperview];
+            let view: &objc2_app_kit::NSView = &*(subview as *mut objc2_app_kit::NSView);
+            view.removeFromSuperview();
         }
     }
 }

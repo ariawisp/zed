@@ -12,7 +12,7 @@ license = "Apache-2.0"
 workspace = true
 
 [features]
-default = ["font-kit", "wayland", "x11", "windows-manifest"]
+default = ["font-kit", "wayland", "x11", "windows-manifest", "objc2", "objc2-foundation", "objc2-app-kit", "objc2-quartz-core"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -152,14 +152,56 @@ foreign-types = "0.5"
 log.workspace = true
 media.workspace = true
 objc.workspace = true
-objc2 = { version = "0.6", optional = true }
-objc2-metal = { version = "0.3", optional = true }
-objc2-metal-kit = { version = "0.3", optional = true }
-objc2-quartz-core = { version = "0.3", optional = true }
-objc2-foundation = { version = "0.3", optional = true }
-objc2-core-foundation = { version = "0.3", optional = true }
+objc2 = { version = "0.6.3", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = [
+    "NSApplication",
+    "block2",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSMenu",
+    "NSMenuItem",
+    "NSEvent",
+    "NSAttributedString",
+    "NSOpenPanel",
+    "NSSavePanel",
+    "NSPanel",
+    "NSWindow",
+    "NSColor",
+    "NSView",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSDragging",
+    "NSTrackingArea",
+    "NSAlert",
+    "NSScreen",
+    "NSWorkspace",
+    "NSDocumentController",
+    "NSCursor",
+    "NSScroller",
+    "NSVisualEffectView",
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
+    "NSGraphics",
+    "NSButton",
+    "NSControl",
+] }
+objc2-metal = { version = "0.3.2", optional = true }
+objc2-metal-kit = { version = "0.3.2", optional = true }
+objc2-quartz-core = { version = "0.3.2", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true, features = [
+    "NSArray",
+    "NSURL",
+    "NSString",
+    "NSData",
+    "NSUserDefaults",
+    "NSProcessInfo",
+    "NSBundle",
+] }
+objc2-core-foundation = { version = "0.3.2", optional = true }
 #TODO: replace with "objc2"
 metal.workspace = true
+block2 = { version = "0.6.2", optional = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies]
 pathfinder_geometry = "0.5"

@@ -25,7 +25,6 @@ use metal_renderer as renderer;
 #[cfg(feature = "macos-blade")]
 use crate::platform::blade as renderer;
 
-mod attributed_string;
 
 #[cfg(feature = "font-kit")]
 mod open_type;
@@ -38,16 +37,9 @@ mod window;
 mod window_appearance;
 
 use crate::{DevicePixels, Pixels, Size, px, size};
-use cocoa::{
-    base::{id, nil},
-    foundation::{NSAutoreleasePool, NSNotFound, NSRect, NSSize, NSString, NSUInteger},
-};
-
+use objc2_foundation::{NSRect, NSSize, NSNotFound, NSUInteger};
 use objc::runtime::{BOOL, NO, YES};
-use std::{
-    ffi::{CStr, c_char},
-    ops::Range,
-};
+use std::ops::Range;
 
 pub(crate) use dispatcher::*;
 pub(crate) use display::*;
@@ -72,22 +64,7 @@ impl BoolExt for bool {
     }
 }
 
-trait NSStringExt {
-    unsafe fn to_str(&self) -> &str;
-}
-
-impl NSStringExt for id {
-    unsafe fn to_str(&self) -> &str {
-        unsafe {
-            let cstr = self.UTF8String();
-            if cstr.is_null() {
-                ""
-            } else {
-                CStr::from_ptr(cstr as *mut c_char).to_str().unwrap()
-            }
-        }
-    }
-}
+// Deprecated NSString::UTF8String shim removed; use typed NSString + autoreleasepool
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -139,10 +116,6 @@ unsafe impl objc::Encode for NSRange {
     }
 }
 
-unsafe fn ns_string(string: &str) -> id {
-    unsafe { NSString::alloc(nil).init_str(string).autorelease() }
-}
-
 impl From<NSSize> for Size<Pixels> {
     fn from(value: NSSize) -> Self {
         Size {
@@ -165,3 +138,5 @@ impl From<NSRect> for Size<DevicePixels> {
         size(DevicePixels(width as i32), DevicePixels(height as i32))
     }
 }
+
+// Removed Cocoa NSRect/NSSize conversions; use typed objc2_foundation NSRect/NSSize instead.
