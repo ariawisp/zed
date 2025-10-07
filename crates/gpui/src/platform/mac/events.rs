@@ -78,6 +78,10 @@ mod function_keys {
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
     let code = match key {
         "space" => SPACE_KEY,
+        "tab" => TAB_KEY,
+        "backtab" => SHIFT_TAB_KEY,
+        "enter" | "return" => ENTER_KEY,
+        "numpadenter" | "kpenter" => NUMPAD_ENTER_KEY,
         "backspace" => BACKSPACE_KEY,
         "escape" => ESCAPE_KEY,
         "up" => function_keys::NSUpArrowFunctionKey,

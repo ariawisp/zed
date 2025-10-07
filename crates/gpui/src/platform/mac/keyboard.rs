@@ -1,7 +1,8 @@
 use collections::HashMap;
 use std::ffi::{CStr, c_void};
 
-use objc::{msg_send, runtime::Object, sel, sel_impl};
+use objc2::msg_send;
+use objc2::runtime::AnyObject as Object;
 
 use crate::{KeybindingKeystroke, Keystroke, PlatformKeyboardLayout, PlatformKeyboardMapper};
 

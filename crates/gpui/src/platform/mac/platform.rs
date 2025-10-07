@@ -6,18 +6,16 @@ use super::{
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardEntry, ClipboardItem, ClipboardString,
     CursorStyle, ForegroundExecutor, Image, ImageFormat, KeyContext, Keymap, MacDispatcher,
-    MacDisplay, MacWindow, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
+    MacDisplay, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
     PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Result, SemanticVersion, SystemMenuType, Task, WindowAppearance, WindowParams,
     hash,
 };
 use anyhow::{Context as _, anyhow};
-use block::ConcreteBlock;
-use cocoa::{
-    appkit::NSWindow,
-    base::{BOOL, id, nil},
-    foundation::NSInteger,
-};
+// Prefer block2 for typed blocks
+use objc2_foundation::NSInteger;
+// Legacy Cocoa `id` alias replacement
+type id = *mut objc2::runtime::AnyObject;
 use objc2::rc::Retained;
 use objc2::AnyThread;
 use objc2_foundation::{ns_string, NSCopying};
@@ -31,9 +29,12 @@ use objc2_app_kit::{
     NSPasteboardTypeRTFD as Objc2NSPasteboardTypeRTFD,
     NSWorkspace, NSDocumentController,
 };
-use objc2::{MainThreadMarker, MainThreadOnly};
+#[cfg(not(feature = "macos-swift"))]
+use super::MacWindow;
+use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
+use objc2::ffi::nil;
 // Keep Cocoa's NSApplication trait/type in scope for existing calls elsewhere.
-use cocoa::appkit::NSApplication;
+// Use typed objc2_app_kit NSApplication APIs
 use core_foundation::{
     base::{CFType, CFTypeRef, OSStatus, TCFType},
     boolean::CFBoolean,
@@ -45,12 +46,8 @@ use core_foundation::{
 use ctor::ctor;
 use futures::channel::oneshot;
 use itertools::Itertools;
-use objc::{
-    class,
-    msg_send,
-    runtime::{Class, Object, Sel},
-    sel, sel_impl,
-};
+// Use objc2 macros exclusively
+use objc2::{class, sel};
 use objc2::runtime::{AnyClass as Objc2AnyClass, AnyObject as Objc2AnyObject, ClassBuilder as Objc2ClassBuilder, Sel as Objc2Sel};
 use parking_lot::Mutex;
 use ptr::null_mut;
@@ -68,11 +65,14 @@ use std::{
 };
 use strum::IntoEnumIterator;
 use util::ResultExt;
+#[cfg(feature = "macos-swift")]
+use crate::OwnedMenuItem;
 
 // Removed: no longer needed after switching to typed NSString conversions
 
 const MAC_PLATFORM_IVAR: &str = "platform";
 
+#[cfg(not(feature = "macos-swift"))]
 #[ctor]
 unsafe fn build_classes() {
     // Register GPUIApplicationDelegate using objc2
@@ -174,6 +174,14 @@ pub(crate) struct MacPlatformState {
     dock_menu: Option<Retained<Objc2NSMenu>>,
     menus: Option<Vec<OwnedMenu>>,
     keyboard_mapper: Rc<MacKeyboardMapper>,
+    #[cfg(feature = "macos-swift")]
+    swift_api: Option<()>,
+    #[cfg(feature = "macos-swift")]
+    next_request_id: u64,
+    #[cfg(feature = "macos-swift")]
+    open_panel_requests: std::collections::HashMap<u64, oneshot::Sender<Result<Option<Vec<PathBuf>>>>>,
+    #[cfg(feature = "macos-swift")]
+    save_panel_requests: std::collections::HashMap<u64, oneshot::Sender<Result<Option<PathBuf>>>>,
 }
 
 impl Default for MacPlatform {
@@ -216,6 +224,14 @@ impl MacPlatform {
             on_keyboard_layout_change: None,
             menus: None,
             keyboard_mapper,
+            #[cfg(feature = "macos-swift")]
+            swift_api: None,
+            #[cfg(feature = "macos-swift")]
+            next_request_id: 1,
+            #[cfg(feature = "macos-swift")]
+            open_panel_requests: Default::default(),
+            #[cfg(feature = "macos-swift")]
+            save_panel_requests: Default::default(),
         }))
     }
 
@@ -465,6 +481,92 @@ impl MacPlatform {
     }
 }
 
+// Swift callbacks for menus (Swift path only)
+#[cfg(feature = "macos-swift")]
+pub(crate) extern "C" fn swift_on_menu_action(ctx: *mut std::ffi::c_void, tag: i32) {
+    if ctx.is_null() { return; }
+    let this = unsafe { &*(ctx as *const MacPlatform) };
+    let mut state = this.0.lock();
+    let action_ptr = {
+        state
+            .menu_actions
+            .get(tag as usize)
+            .map(|a| a.as_ref() as *const dyn Action)
+    };
+    if let (Some(cb), Some(ptr)) = (state.menu_command.as_mut(), action_ptr) {
+        // SAFETY: `ptr` valid for duration of this call while `state` is held
+        let action_ref: &dyn Action = unsafe { &*ptr };
+        cb(action_ref);
+    }
+}
+
+#[cfg(feature = "macos-swift")]
+pub(crate) extern "C" fn swift_on_validate_menu(ctx: *mut std::ffi::c_void, tag: i32) -> bool {
+    if ctx.is_null() { return true; }
+    let this = unsafe { &*(ctx as *const MacPlatform) };
+    let mut state = this.0.lock();
+    let action_ptr = {
+        state
+            .menu_actions
+            .get(tag as usize)
+            .map(|a| a.as_ref() as *const dyn Action)
+    };
+    if let (Some(cb), Some(ptr)) = (state.validate_menu_command.as_mut(), action_ptr) {
+        let action_ref: &dyn Action = unsafe { &*ptr };
+        return cb(action_ref);
+    }
+    true
+}
+
+#[cfg(feature = "macos-swift")]
+pub(crate) extern "C" fn swift_on_open_panel_result(ctx: *mut std::ffi::c_void, req: u64, json: *const u8, len: usize) {
+    if ctx.is_null() { return; }
+    let this = unsafe { &*(ctx as *const MacPlatform) };
+    let mut state = this.0.lock();
+    if let Some(tx) = state.open_panel_requests.remove(&req) {
+        if json.is_null() || len == 0 {
+            let _ = tx.send(Ok(None));
+            return;
+        }
+        let slice = unsafe { std::slice::from_raw_parts(json, len) };
+        let parsed: serde_json::Value = serde_json::from_slice(slice).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(map) = parsed {
+            if let Some(serde_json::Value::Array(paths)) = map.get("paths") {
+                let out = paths
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| PathBuf::from(s))
+                    .collect::<Vec<_>>();
+                let _ = tx.send(Ok(Some(out)));
+                return;
+            }
+        }
+        let _ = tx.send(Ok(None));
+    }
+}
+
+#[cfg(feature = "macos-swift")]
+pub(crate) extern "C" fn swift_on_save_panel_result(ctx: *mut std::ffi::c_void, req: u64, json: *const u8, len: usize) {
+    if ctx.is_null() { return; }
+    let this = unsafe { &*(ctx as *const MacPlatform) };
+    let mut state = this.0.lock();
+    if let Some(tx) = state.save_panel_requests.remove(&req) {
+        if json.is_null() || len == 0 {
+            let _ = tx.send(Ok(None));
+            return;
+        }
+        let slice = unsafe { std::slice::from_raw_parts(json, len) };
+        let parsed: serde_json::Value = serde_json::from_slice(slice).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(map) = parsed {
+            if let Some(path) = map.get("path").and_then(|v| v.as_str()) {
+                let _ = tx.send(Ok(Some(PathBuf::from(path))));
+                return;
+            }
+        }
+        let _ = tx.send(Ok(None));
+    }
+}
+
 impl Platform for MacPlatform {
     fn background_executor(&self) -> BackgroundExecutor {
         self.0.lock().background_executor.clone()
@@ -484,7 +586,27 @@ impl Platform for MacPlatform {
             drop(state);
             on_finish_launching();
             unsafe { CFRunLoopRun() };
-        } else {
+            return;
+        }
+
+        // If enabled, use the Swift AppKit runner exclusively (no fallback).
+        #[cfg(feature = "macos-swift")]
+        {
+            // Fire finish-launching immediately before entering run loop
+            on_finish_launching();
+            // Initialize Swift with this MacPlatform as user data
+            let callbacks = crate::platform::mac::swift_ffi::callbacks();
+            unsafe {
+                let ctx = self as *const _ as *mut std::ffi::c_void;
+                crate::platform::mac::swift_ffi::gpui_macos_init(ctx, &callbacks as *const _);
+                crate::platform::mac::swift_ffi::gpui_macos_run();
+            }
+            return;
+        }
+
+        // Swift feature is disabled: use existing Rust AppKit glue
+        #[cfg(not(feature = "macos-swift"))]
+        {
             state.finish_launching = Some(on_finish_launching);
             drop(state);
         }
@@ -632,7 +754,7 @@ impl Platform for MacPlatform {
 
     #[cfg(feature = "screen-capture")]
     fn is_screen_capture_supported(&self) -> bool {
-        let min_version = cocoa::foundation::NSOperatingSystemVersion::new(12, 3, 0);
+        let min_version = objc2_foundation::NSOperatingSystemVersion { majorVersion: 12, minorVersion: 3, patchVersion: 0 };
         super::is_macos_version_at_least(min_version)
     }
 
@@ -644,13 +766,19 @@ impl Platform for MacPlatform {
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        MacWindow::active_window()
+        #[cfg(not(feature = "macos-swift"))]
+        { return MacWindow::active_window(); }
+        #[cfg(feature = "macos-swift")]
+        { None }
     }
 
     // Returns the windows ordered front-to-back, meaning that the active
     // window is the first one in the returned vec.
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {
-        Some(MacWindow::ordered_windows())
+        #[cfg(not(feature = "macos-swift"))]
+        { return Some(MacWindow::ordered_windows()); }
+        #[cfg(feature = "macos-swift")]
+        { None }
     }
 
     fn open_window(
@@ -658,13 +786,54 @@ impl Platform for MacPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        let renderer_context = self.0.lock().renderer_context.clone();
-        Ok(Box::new(MacWindow::open(
-            handle,
-            options,
-            self.foreground_executor(),
-            renderer_context,
-        )))
+        #[cfg(feature = "macos-swift")]
+        {
+            use crate::platform::mac::swift_ffi::{GPUI_WindowParams};
+            // Build minimal params for Swift
+            let size = options.bounds.size;
+            let title_cstr = std::ffi::CString::new(
+                options
+                    .titlebar
+                    .as_ref()
+                    .and_then(|t| t.title.as_ref())
+                    .map(|s| s.as_str())
+                    .unwrap_or("GPUI"),
+            )
+            .ok();
+            let params = GPUI_WindowParams {
+                width: size.width.0 as u32,
+                height: size.height.0 as u32,
+                scale: 2.0,
+                title: title_cstr.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            };
+            // Call Swift to create window + layer
+            let mut out_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut out_layer: *mut std::ffi::c_void = std::ptr::null_mut();
+            unsafe {
+                crate::platform::mac::swift_ffi::gpui_macos_create_window(&params, &mut out_handle, &mut out_layer);
+            }
+            let renderer_context = self.0.lock().renderer_context.clone();
+            let window = super::SwiftMacWindow::open(
+                handle,
+                options,
+                self.foreground_executor(),
+                renderer_context,
+                out_handle as *mut objc2::runtime::AnyObject,
+                out_layer,
+            );
+            return Ok(Box::new(window));
+        }
+
+        #[cfg(not(feature = "macos-swift"))]
+        {
+            let renderer_context = self.0.lock().renderer_context.clone();
+            Ok(Box::new(MacWindow::open(
+                handle,
+                options,
+                self.foreground_executor(),
+                renderer_context,
+            )))
+        }
     }
 
     fn window_appearance(&self) -> WindowAppearance {
@@ -687,7 +856,7 @@ impl Platform for MacPlatform {
     fn register_url_scheme(&self, scheme: &str) -> Task<anyhow::Result<()>> {
         // API only available post Monterey
         // https://developer.apple.com/documentation/appkit/nsworkspace/3753004-setdefaultapplicationaturl
-        let (done_tx, done_rx) = oneshot::channel();
+        // No completion callback required; fire-and-forget registration
         if Self::os_version() < SemanticVersion::new(12, 0, 0) {
             return Task::ready(Err(anyhow!(
                 "macOS 12.0 or later is required to register URL schemes"
@@ -704,34 +873,19 @@ impl Platform for MacPlatform {
         };
 
         unsafe {
-            let ws: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let ws: id = objc2::msg_send![class!(NSWorkspace), sharedWorkspace];
             let scheme = objc2_foundation::NSString::from_str(scheme);
-            let app: id = msg_send![ws, URLForApplicationWithBundleIdentifier: bundle_id];
+            let app: id = objc2::msg_send![ws, URLForApplicationWithBundleIdentifier: bundle_id];
             if app == nil {
                 return Task::ready(Err(anyhow!(
                     "Cannot register URL scheme until app is installed"
                 )));
             }
-            let done_tx = Cell::new(Some(done_tx));
-            let block = ConcreteBlock::new(move |error: id| {
-                let result = if error == nil {
-                    Ok(())
-                } else {
-                    let msg: id = msg_send![error, localizedDescription];
-                    Err(anyhow!("Failed to register: {msg:?}"))
-                };
-
-                if let Some(done_tx) = done_tx.take() {
-                    let _ = done_tx.send(result);
-                }
-            });
-            let block = block.copy();
             let scheme_ref: &objc2_foundation::NSString = &*scheme;
-            let _: () = msg_send![ws, setDefaultApplicationAtURL: app toOpenURLsWithScheme: scheme_ref completionHandler: block];
+            let _: () = objc2::msg_send![ws, setDefaultApplicationAtURL: app, toOpenURLsWithScheme: scheme_ref, completionHandler: nil];
         }
 
-        self.background_executor()
-            .spawn(async { crate::Flatten::flatten(done_rx.await.map_err(|e| anyhow!(e))) })
+        Task::ready(Ok(()))
     }
 
     fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
@@ -742,6 +896,20 @@ impl Platform for MacPlatform {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        #[cfg(feature = "macos-swift")]
+        {
+            use serde::Serialize;
+            #[derive(Serialize)]
+            struct Opts<'a> { files: bool, directories: bool, multiple: bool, #[serde(skip_serializing_if="Option::is_none")] prompt: Option<&'a str> }
+            let o = Opts { files: options.files, directories: options.directories, multiple: options.multiple, prompt: options.prompt.as_ref().map(|s| s.as_ref()) };
+            let json = serde_json::to_vec(&o).unwrap_or_default();
+            let (tx, rx) = oneshot::channel();
+            let mut state = self.0.lock();
+            let id = { let id = state.next_request_id; state.next_request_id += 1; id };
+            state.open_panel_requests.insert(id, tx);
+            unsafe { crate::platform::mac::swift_ffi::gpui_macos_open_panel(json.as_ptr(), json.len(), id); }
+            return rx;
+        }
         let (done_tx, done_rx) = oneshot::channel();
         self.foreground_executor()
             .spawn(async move {
@@ -797,6 +965,21 @@ impl Platform for MacPlatform {
         directory: &Path,
         suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+        #[cfg(feature = "macos-swift")]
+        {
+            use serde::Serialize;
+            #[derive(Serialize)]
+            struct Opts<'a> { directory: &'a str, #[serde(skip_serializing_if="Option::is_none")] suggested_name: Option<&'a str>, #[serde(skip_serializing_if="Option::is_none")] prompt: Option<&'a str> }
+            let dir_s = directory.to_string_lossy();
+            let o = Opts { directory: &dir_s, suggested_name, prompt: None };
+            let json = serde_json::to_vec(&o).unwrap_or_default();
+            let (tx, rx) = oneshot::channel();
+            let mut state = self.0.lock();
+            let id = { let id = state.next_request_id; state.next_request_id += 1; id };
+            state.save_panel_requests.insert(id, tx);
+            unsafe { crate::platform::mac::swift_ffi::gpui_macos_save_panel(json.as_ptr(), json.len(), id); }
+            return rx;
+        }
         let directory = directory.to_owned();
         let suggested_name = suggested_name.map(|s| s.to_owned());
         let (done_tx, done_rx) = oneshot::channel();
@@ -881,7 +1064,7 @@ impl Platform for MacPlatform {
                 let root = objc2_foundation::NSString::from_str("");
                 let full_ref: &objc2_foundation::NSString = &*full_path;
                 let root_ref: &objc2_foundation::NSString = &*root;
-                let _: BOOL = unsafe { objc2::msg_send![&*ws, selectFile: full_ref, inFileViewerRootedAtPath: root_ref] };
+                let _: bool = unsafe { objc2::msg_send![&*ws, selectFile: full_ref, inFileViewerRootedAtPath: root_ref] };
             })
             .detach();
     }
@@ -939,29 +1122,132 @@ impl Platform for MacPlatform {
     fn app_path(&self) -> Result<PathBuf> {
         unsafe {
             let bundle = objc2_foundation::NSBundle::mainBundle();
-            let bobj: &objc::runtime::Object =
-                &*((&*bundle as *const _) as *mut objc::runtime::Object);
-            Ok(path_from_objc(msg_send![bobj, bundlePath]))
+            let bobj: &objc2::runtime::AnyObject =
+                &*((&*bundle as *const _) as *mut objc2::runtime::AnyObject);
+            Ok(path_from_objc(objc2::msg_send![bobj, bundlePath]))
         }
     }
 
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {
-        let mtm = MainThreadMarker::new().expect("menus must be set on main thread");
-        // Get app delegate id via Cocoa to reuse as NSMenuDelegate
-        let delegate_id: *mut Objc2AnyObject = unsafe {
+        #[cfg(feature = "macos-swift")]
+        {
+            use serde::Serialize;
+            #[derive(Serialize)]
+            struct MenuItemJson {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                title: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tag: Option<i32>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                key: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                mods: Option<u32>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                items: Option<Vec<MenuItemJson>>,
+            }
+            #[derive(Serialize)]
+            struct MenuJson { title: String, items: Vec<MenuItemJson> }
+
+            fn convert_owned_items(
+                actions: &mut Vec<Box<dyn Action>>,
+                items: Vec<OwnedMenuItem>,
+                keymap: &Keymap,
+            ) -> Vec<MenuItemJson> {
+                let mut out = Vec::new();
+                for it in items {
+                    match it {
+                        OwnedMenuItem::Separator => out.push(MenuItemJson { kind: "separator", title: None, tag: None, key: None, mods: None, items: None }),
+                        OwnedMenuItem::Submenu(menu) => {
+                            let sub_items = convert_owned_items(actions, menu.items, keymap);
+                            out.push(MenuItemJson { kind: "submenu", title: Some(menu.name.to_string()), tag: None, key: None, mods: None, items: Some(sub_items) })
+                        }
+                        OwnedMenuItem::SystemMenu(_os) => {
+                            // Skip for now; Services is usually injected by AppKit
+                        }
+                        OwnedMenuItem::Action { name, action, os_action: _ } => {
+                            let tag = actions.len() as i32;
+                            // Derive a primary keystroke for display
+                            let keystrokes = keymap
+                                .bindings_for_action(action.as_ref())
+                                .find_or_first(|binding| {
+                                    binding.predicate().is_none_or(|predicate| {
+                                        static DEFAULT_CONTEXT: OnceLock<Vec<KeyContext>> = OnceLock::new();
+                                        predicate.eval(DEFAULT_CONTEXT.get_or_init(|| {
+                                            let mut workspace_context = KeyContext::new_with_defaults();
+                                            workspace_context.add("Workspace");
+                                            let mut pane_context = KeyContext::new_with_defaults();
+                                            pane_context.add("Pane");
+                                            let mut editor_context = KeyContext::new_with_defaults();
+                                            editor_context.add("Editor");
+                                            pane_context.extend(&editor_context);
+                                            workspace_context.extend(&pane_context);
+                                            vec![workspace_context]
+                                        }))
+                                    })
+                                })
+                                .map(|binding| binding.keystrokes());
+
+                            let mut key_equiv: Option<String> = None;
+                            let mut mods_bits: u32 = 0;
+                            if let Some(keystrokes) = keystrokes {
+                                if keystrokes.len() == 1 {
+                                    let ks = &keystrokes[0];
+                                    // Map modifiers to GPUI_Mod* bits
+                                    let mods = ks.modifiers();
+                                    if mods.platform { mods_bits |= 1 << 1; }
+                                    if mods.control { mods_bits |= 1 << 2; }
+                                    if mods.alt { mods_bits |= 1 << 3; }
+                                    if mods.shift { mods_bits |= 1 << 0; }
+                                    if mods.function { mods_bits |= 1 << 4; }
+                                    key_equiv = Some(super::events::key_to_native(ks.key()).to_string());
+                                }
+                            }
+                            actions.push(action);
+                            out.push(MenuItemJson { kind: "action", title: Some(name), tag: Some(tag), key: key_equiv, mods: if mods_bits != 0 { Some(mods_bits) } else { None }, items: None });
+                        }
+                    }
+                }
+                out
+            }
+
+            // Convert to OwnedMenu, clone for state, and build JSON with action tags
+            let owned: Vec<OwnedMenu> = menus.into_iter().map(|m| m.owned()).collect();
+            let owned_for_state = owned.clone();
+
+            let mut state = self.0.lock();
+            state.menu_actions.clear();
+            let mut json_menus = Vec::new();
+            for menu in owned {
+                let items = convert_owned_items(&mut state.menu_actions, menu.items, keymap);
+                json_menus.push(MenuJson { title: menu.name.to_string(), items });
+            }
+            drop(state);
+            let json = serde_json::to_vec(&json_menus).unwrap_or_default();
+            unsafe { crate::platform::mac::swift_ffi::gpui_macos_set_menus(json.as_ptr(), json.len()); }
+            self.0.lock().menus = Some(owned_for_state);
+            return;
+        }
+
+        #[cfg(not(feature = "macos-swift"))]
+        {
             let mtm = MainThreadMarker::new().expect("menus must be set on main thread");
+            // Get app delegate id via Cocoa to reuse as NSMenuDelegate
+            let delegate_id: *mut Objc2AnyObject = unsafe {
+                let mtm = MainThreadMarker::new().expect("menus must be set on main thread");
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                objc2::msg_send![&*app, delegate]
+            };
+            let mut state = self.0.lock();
+            let actions = &mut state.menu_actions;
+            let application_menu = unsafe { self.create_menu_bar_typed(&menus, delegate_id, actions, keymap) };
+            drop(state);
+
             let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-            objc2::msg_send![&*app, delegate]
-        };
-        let mut state = self.0.lock();
-        let actions = &mut state.menu_actions;
-        let application_menu = unsafe { self.create_menu_bar_typed(&menus, delegate_id, actions, keymap) };
-        drop(state);
+            app.setMainMenu(Some(&application_menu));
 
-        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-        app.setMainMenu(Some(&application_menu));
-
-        self.0.lock().menus = Some(menus.into_iter().map(|menu| menu.owned()).collect());
+            self.0.lock().menus = Some(menus.into_iter().map(|menu| menu.owned()).collect());
+        }
     }
 
     fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
@@ -969,11 +1255,86 @@ impl Platform for MacPlatform {
     }
 
     fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap) {
-        let mtm = MainThreadMarker::new().expect("dock menu must be set on main thread");
-        let mut state = self.0.lock();
-        let actions = &mut state.menu_actions;
-        let new = self.create_dock_menu_typed(menu, actions, keymap, mtm);
-        state.dock_menu = Some(new);
+        #[cfg(feature = "macos-swift")]
+        {
+            use serde::Serialize;
+            #[derive(Serialize)]
+            struct MenuItemJson {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                title: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tag: Option<i32>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                key: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                mods: Option<u32>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                items: Option<Vec<MenuItemJson>>,
+            }
+
+            fn convert_items(
+                actions: &mut Vec<Box<dyn Action>>,
+                items: Vec<MenuItem>,
+                keymap: &Keymap,
+            ) -> Vec<MenuItemJson> {
+                let mut out = Vec::new();
+                for it in items {
+                    match it {
+                        MenuItem::Separator => out.push(MenuItemJson { kind: "separator", title: None, tag: None, key: None, mods: None, items: None }),
+                        MenuItem::Submenu(menu) => {
+                            let sub_items = convert_items(actions, menu.items, keymap);
+                            out.push(MenuItemJson { kind: "submenu", title: Some(menu.name.to_string()), tag: None, key: None, mods: None, items: Some(sub_items) })
+                        }
+                        MenuItem::SystemMenu(_os) => {
+                            // Skip on Swift path for dock menu
+                        }
+                        MenuItem::Action { name, action, os_action: _ } => {
+                            // Assign a new tag for this action
+                            let tag = actions.len() as i32;
+                            // Try to derive a primary keystroke for display
+                            let keystrokes = keymap
+                                .bindings_for_action(action.as_ref())
+                                .find_or_first(|binding| binding.predicate().is_none())
+                                .map(|binding| binding.keystrokes());
+                            let mut key_equiv: Option<String> = None;
+                            let mut mods_bits: u32 = 0;
+                            if let Some(keystrokes) = keystrokes {
+                                if keystrokes.len() == 1 {
+                                    let ks = &keystrokes[0];
+                                    let mods = ks.modifiers();
+                                    if mods.platform { mods_bits |= 1 << 1; }
+                                    if mods.control { mods_bits |= 1 << 2; }
+                                    if mods.alt { mods_bits |= 1 << 3; }
+                                    if mods.shift { mods_bits |= 1 << 0; }
+                                    if mods.function { mods_bits |= 1 << 4; }
+                                    key_equiv = Some(super::events::key_to_native(ks.key()).to_string());
+                                }
+                            }
+                            actions.push(action);
+                            out.push(MenuItemJson { kind: "action", title: Some(name.to_string()), tag: Some(tag), key: key_equiv, mods: if mods_bits != 0 { Some(mods_bits) } else { None }, items: None });
+                        }
+                    }
+                }
+                out
+            }
+
+            let mut state = self.0.lock();
+            let items_json = convert_items(&mut state.menu_actions, menu, keymap);
+            drop(state);
+            let json = serde_json::to_vec(&items_json).unwrap_or_default();
+            unsafe { crate::platform::mac::swift_ffi::gpui_macos_set_dock_menu(json.as_ptr(), json.len()); }
+            return;
+        }
+
+        #[cfg(not(feature = "macos-swift"))]
+        {
+            let mtm = MainThreadMarker::new().expect("dock menu must be set on main thread");
+            let mut state = self.0.lock();
+            let actions = &mut state.menu_actions;
+            let new = self.create_dock_menu_typed(menu, actions, keymap, mtm);
+            state.dock_menu = Some(new);
+        }
     }
 
     fn add_recent_document(&self, path: &Path) {
@@ -991,17 +1352,50 @@ impl Platform for MacPlatform {
         unsafe {
             let bundle = objc2_foundation::NSBundle::mainBundle();
             let name = objc2_foundation::NSString::from_str(name);
-            let bobj: &objc::runtime::Object =
-                &*((&*bundle as *const _) as *mut objc::runtime::Object);
-            let url: id = msg_send![bobj, URLForAuxiliaryExecutable: &*name];
-            anyhow::ensure!(!url.is_null(), "resource not found");
-            ns_url_to_path(url)
+            let url: Option<objc2::rc::Retained<objc2_foundation::NSURL>> = objc2::msg_send![&*bundle, URLForAuxiliaryExecutable: &*name];
+            let url = url.context("resource not found")?;
+            objc_url_to_path(&url)
         }
     }
 
     /// Match cursor style to one of the styles available
     /// in macOS's [NSCursor](https://developer.apple.com/documentation/appkit/nscursor).
     fn set_cursor_style(&self, style: CursorStyle) {
+        #[cfg(feature = "macos-swift")]
+        {
+            // Map CursorStyle to a stable integer understood by Swift
+            fn map_style(s: CursorStyle) -> i32 {
+                match s {
+                    CursorStyle::Arrow => 0,
+                    CursorStyle::IBeam => 1,
+                    CursorStyle::Crosshair => 2,
+                    CursorStyle::ClosedHand => 3,
+                    CursorStyle::OpenHand => 4,
+                    CursorStyle::PointingHand => 5,
+                    CursorStyle::ResizeLeftRight => 6,
+                    CursorStyle::ResizeUpDown => 7,
+                    CursorStyle::ResizeLeft => 8,
+                    CursorStyle::ResizeRight => 9,
+                    CursorStyle::ResizeColumn => 10,
+                    CursorStyle::ResizeRow => 11,
+                    CursorStyle::ResizeUp => 12,
+                    CursorStyle::ResizeDown => 13,
+                    CursorStyle::ResizeUpLeftDownRight => 14,
+                    CursorStyle::ResizeUpRightDownLeft => 15,
+                    CursorStyle::IBeamCursorForVerticalLayout => 16,
+                    CursorStyle::OperationNotAllowed => 17,
+                    CursorStyle::DragLink => 18,
+                    CursorStyle::DragCopy => 19,
+                    CursorStyle::ContextualMenu => 20,
+                    CursorStyle::None => -1,
+                }
+            }
+            let hide = matches!(style, CursorStyle::None);
+            unsafe { crate::platform::mac::swift_ffi::gpui_macos_set_cursor(map_style(style), hide); }
+            return;
+        }
+
+        #[cfg(not(feature = "macos-swift"))]
         unsafe {
             if style == CursorStyle::None {
                 let _: () = objc2::msg_send![objc2::class!(NSCursor), setHiddenUntilMouseMoves: true];
@@ -1023,16 +1417,12 @@ impl Platform for MacPlatform {
                 CursorStyle::ResizeRow => objc2::msg_send![objc2::class!(NSCursor), resizeUpDownCursor],
                 CursorStyle::ResizeUp => objc2::msg_send![objc2::class!(NSCursor), resizeUpCursor],
                 CursorStyle::ResizeDown => objc2::msg_send![objc2::class!(NSCursor), resizeDownCursor],
-
-                // Undocumented, private class methods:
-                // https://stackoverflow.com/questions/27242353/cocoa-predefined-resize-mouse-cursor
                 CursorStyle::ResizeUpLeftDownRight => {
                     objc2::msg_send![objc2::class!(NSCursor), _windowResizeNorthWestSouthEastCursor]
                 }
                 CursorStyle::ResizeUpRightDownLeft => {
                     objc2::msg_send![objc2::class!(NSCursor), _windowResizeNorthEastSouthWestCursor]
                 }
-
                 CursorStyle::IBeamCursorForVerticalLayout => {
                     objc2::msg_send![objc2::class!(NSCursor), IBeamCursorForVerticalLayout]
                 }
@@ -1044,8 +1434,6 @@ impl Platform for MacPlatform {
                 CursorStyle::ContextualMenu => objc2::msg_send![objc2::class!(NSCursor), contextualMenuCursor],
                 CursorStyle::None => unreachable!(),
             };
-
-            // Set cursor using typed NSCursor API
             let cursor_ref: &objc2_app_kit::NSCursor = &*(new_cursor as *mut objc2_app_kit::NSCursor);
             cursor_ref.set();
         }
@@ -1520,7 +1908,7 @@ extern "C" fn handle_menu_item(this: &mut Objc2AnyObject, _: Objc2Sel, item: *mu
         let platform = get_mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.menu_command.take() {
-            let item_obj: &objc::runtime::Object = unsafe { &*(item as *mut objc::runtime::Object) };
+            let item_obj: &objc2::runtime::AnyObject = unsafe { &*(item as *mut objc2::runtime::AnyObject) };
             let tag: NSInteger = msg_send![item_obj, tag];
             let index = tag as usize;
             if let Some(action) = lock.menu_actions.get(index) {
@@ -1539,7 +1927,7 @@ extern "C" fn validate_menu_item(this: &mut Objc2AnyObject, _: Objc2Sel, item: *
         let platform = get_mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.validate_menu_command.take() {
-            let item_obj: &objc::runtime::Object = unsafe { &*(item as *mut objc::runtime::Object) };
+            let item_obj: &objc2::runtime::AnyObject = unsafe { &*(item as *mut objc2::runtime::AnyObject) };
             let tag: NSInteger = msg_send![item_obj, tag];
             let index = tag as usize;
             if let Some(action) = lock.menu_actions.get(index) {
@@ -1585,9 +1973,9 @@ extern "C" fn handle_dock_menu(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut O
 // Removed legacy ns_string helper; prefer objc2_foundation::NSString::from_str instead.
 
 unsafe fn ns_url_to_path(url: id) -> Result<PathBuf> {
-    let path: *mut c_char = msg_send![url, fileSystemRepresentation];
+    let path: *mut c_char = objc2::msg_send![url, fileSystemRepresentation];
     anyhow::ensure!(!path.is_null(), "url is not a file path: {}", {
-        let abs: id = msg_send![url, absoluteString];
+        let abs: id = objc2::msg_send![url, absoluteString];
         if abs.is_null() { String::new() } else {
             let sref: &objc2_foundation::NSString = unsafe { &*(abs as *mut objc2_foundation::NSString) };
             objc2::rc::autoreleasepool(|pool| unsafe { sref.to_str(pool).to_owned() })
@@ -1608,11 +1996,11 @@ fn objc_url_to_path(url: &objc2_foundation::NSURL) -> Result<PathBuf> {
 
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
-    pub(super) fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut Object;
+    pub(super) fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut objc2::runtime::AnyObject;
     pub(super) fn TISGetInputSourceProperty(
-        inputSource: *mut Object,
+        inputSource: *mut objc2::runtime::AnyObject,
         propertyKey: *const c_void,
-    ) -> *mut Object;
+    ) -> *mut objc2::runtime::AnyObject;
 
     pub(super) fn UCKeyTranslate(
         keyLayoutPtr: *const ::std::os::raw::c_void,

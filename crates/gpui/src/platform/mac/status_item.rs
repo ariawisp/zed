@@ -11,13 +11,15 @@ use crate::{
     Scene,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use objc::runtime::Object;
+use objc2::runtime::AnyObject as Object;
 use objc2_app_kit::{NSStatusBar, NSStatusItem};
-// Use raw Objective-C object pointers directly where needed
+// Use raw Objective-C object pointers where typed APIs are missing
 use ctor::ctor;
 use foreign_types::ForeignTypeRef;
-use objc::{class, msg_send, rc::StrongPtr, sel, sel_impl};
-use objc2::runtime::{AnyClass as Objc2AnyClass, AnyObject as Objc2AnyObject, AnyProtocol as Objc2AnyProtocol, ClassBuilder as Objc2ClassBuilder};
+use objc2::{class, sel, msg_send};
+use super::shims;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass as Objc2AnyClass, AnyObject as Objc2AnyObject, AnyProtocol as Objc2AnyProtocol, ClassBuilder as Objc2ClassBuilder, ProtocolObject};
 use std::ffi::CStr;
 use std::{
     cell::RefCell,
@@ -30,6 +32,10 @@ use std::{
 use super::screen::Screen;
 
 const STATE_IVAR: &str = "state";
+
+fn status_item_button_ptr(item: &NSStatusItem) -> *mut Object {
+    unsafe { msg_send![&*item, button] }
+}
 
 #[ctor]
 unsafe fn build_classes() {
@@ -68,8 +74,8 @@ unsafe fn build_classes() {
 pub struct StatusItem(Rc<RefCell<StatusItemState>>);
 
 struct StatusItemState {
-    native_item: StrongPtr,
-    native_view: StrongPtr,
+    native_item: Retained<NSStatusItem>,
+    native_view: *mut Object,
     renderer: Renderer,
     scene: Option<Scene>,
     event_callback: Option<Box<dyn FnMut(Event) -> bool>>,
@@ -82,11 +88,10 @@ impl StatusItem {
             let renderer = Renderer::new(false, fonts);
             // Create a status item with square length (-2.0 per AppKit docs)
             let status_bar = NSStatusBar::systemStatusBar();
-            let status_item = status_bar.statusItemWithLength(-2.0);
-            let native_item = StrongPtr::retain(status_item.as_ptr() as *mut Object);
+            let native_item = status_bar.statusItemWithLength(-2.0);
 
-            let button = native_item.button();
-            let _: () = msg_send![button, setHidden: true];
+            let button: *mut Object = unsafe { shims::status_item_button_ptr(&native_item) };
+            let _: () = objc2::msg_send![button, setHidden: true];
 
             let view_cls: &Objc2AnyClass = Objc2AnyClass::get(CStr::from_bytes_with_nul(b"GPUIStatusItemView\0").unwrap())
                 .expect("GPUIStatusItemView class not registered");
@@ -94,16 +99,17 @@ impl StatusItem {
             let native_view = native_view_any as *mut Object;
             let state = Rc::new(RefCell::new(StatusItemState {
                 native_item,
-                native_view: StrongPtr::new(native_view),
+                native_view,
                 renderer,
                 scene: None,
                 event_callback: None,
                 appearance_changed_callback: None,
             }));
 
-            let parent_view = button.superview().superview();
-            let parent_frame: NSRect = msg_send![parent_view, frame];
-            let _: *mut Object = msg_send![native_view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), parent_frame.size)];
+            let parent_view: *mut Object = objc2::msg_send![button, superview];
+            let parent_view: *mut Object = objc2::msg_send![parent_view, superview];
+            let parent_frame: NSRect = objc2::msg_send![parent_view, frame];
+            let _: *mut Object = objc2::msg_send![native_view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), parent_frame.size)];
             // Set ivar using objc2 helpers
             {
                 let ivar_name = CStr::from_bytes_with_nul(b"state\0").unwrap();
@@ -113,9 +119,9 @@ impl StatusItem {
                     *ivar.load_mut::<*const c_void>(view_ref) = Weak::into_raw(Rc::downgrade(&state)) as *const c_void;
                 }
             }
-            let _: () = msg_send![native_view, setWantsBestResolutionOpenGLSurface: true];
-            let _: () = msg_send![native_view, setWantsLayer: true];
-            let _: () = msg_send![native_view, setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize];
+            let _: () = objc2::msg_send![native_view, setWantsBestResolutionOpenGLSurface: true];
+            let _: () = objc2::msg_send![native_view, setWantsLayer: true];
+            let _: () = objc2::msg_send![native_view, setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize];
 
             {
                 let pv: &objc2_app_kit::NSView = &*(parent_view as *mut objc2_app_kit::NSView);
@@ -165,8 +171,10 @@ impl platform::Window for StatusItem {
 
     fn appearance(&self) -> platform::Appearance {
         unsafe {
-            let appearance: *mut Object =
-                msg_send![self.0.borrow().native_item.button(), effectiveAppearance];
+            let button: *mut Object = if let Some(btn) = self.0.borrow().native_item.button() {
+                btn as *const _ as *mut Object
+            } else { std::ptr::null_mut() };
+            let appearance: *mut Object = objc2::msg_send![button, effectiveAppearance];
             platform::Appearance::from_native(appearance as *mut objc2::runtime::AnyObject)
         }
     }
@@ -174,7 +182,7 @@ impl platform::Window for StatusItem {
     fn screen(&self) -> Rc<dyn platform::Screen> {
         unsafe {
             let window = self.0.borrow().native_window();
-            Rc::new(Screen { native_screen: msg_send![window, screen] })
+            Rc::new(Screen { native_screen: objc2::msg_send![window, screen] })
         }
     }
 
@@ -224,7 +232,8 @@ impl platform::Window for StatusItem {
     fn present_scene(&mut self, scene: Scene) {
         self.0.borrow_mut().scene = Some(scene);
         unsafe {
-            let _: () = msg_send![*self.0.borrow().native_view, setNeedsDisplay: true];
+            let nv: &objc2_app_kit::NSView = &*(self.0.borrow().native_view as *mut objc2_app_kit::NSView);
+            nv.setNeedsDisplay(true);
         }
     }
 
@@ -283,8 +292,10 @@ impl StatusItemState {
 
     fn content_size(&self) -> Vector2F {
         unsafe {
-            let parent = self.native_item.button().superview().superview();
-            let rect: NSRect = msg_send![parent, frame];
+            let button: *mut Object = unsafe { shims::status_item_button_ptr(&self.native_item) };
+            let parent: *mut Object = objc2::msg_send![button, superview];
+            let parent: *mut Object = objc2::msg_send![parent, superview];
+            let rect: NSRect = objc2::msg_send![parent, frame];
             let NSSize { width, height } = rect.size;
             vec2f(width as f32, height as f32)
         }
@@ -292,7 +303,8 @@ impl StatusItemState {
 
     fn scale_factor(&self) -> f32 {
         unsafe {
-            let window: *mut Object = msg_send![self.native_item.button(), window];
+            let button: *mut Object = objc2::msg_send![&*self.native_item, button];
+            let window: *mut Object = objc2::msg_send![button, window];
             let win: &objc2_app_kit::NSWindow = &*(window as *mut objc2_app_kit::NSWindow);
             if let Some(screen) = win.screen() {
                 screen.backingScaleFactor() as f32
@@ -303,7 +315,12 @@ impl StatusItemState {
     }
 
     pub fn native_window(&self) -> *mut Object {
-        unsafe { msg_send![self.native_item.button(), window] }
+        unsafe {
+            let button: *mut Object = if let Some(btn) = self.native_item.button() {
+                btn as *const _ as *mut Object
+            } else { std::ptr::null_mut() };
+            objc2::msg_send![button, window]
+        }
     }
 }
 
@@ -311,7 +328,7 @@ extern "C" fn dealloc_view(this: &Object, _: Sel) {
     unsafe {
         drop_state(this);
 
-        let _: () = msg_send![super(this, class!(NSView)), dealloc];
+        let _: () = objc2::msg_send![super(this, objc2::class!(NSView)), dealloc];
     }
 }
 
@@ -365,14 +382,24 @@ extern "C" fn view_did_change_effective_appearance(this: &Object, _: Sel) {
 }
 
 unsafe fn get_state(object: &Object) -> Weak<RefCell<StatusItemState>> {
-    let raw: *mut c_void = *object.get_ivar(STATE_IVAR);
-    let weak1 = Weak::from_raw(raw as *mut RefCell<StatusItemState>);
+    let ivar_name = CStr::from_bytes_with_nul(b"state\0").unwrap();
+    let ivar = object.class().instance_variable(ivar_name).expect("state ivar missing");
+    let raw: *const c_void = *ivar.load::<*const c_void>(object);
+    let weak1 = Weak::from_raw(raw as *const RefCell<StatusItemState>);
     let weak2 = weak1.clone();
     let _ = Weak::into_raw(weak1);
     weak2
 }
 
 unsafe fn drop_state(object: &Object) {
-    let raw: *const c_void = *object.get_ivar(STATE_IVAR);
+    let ivar_name = CStr::from_bytes_with_nul(b"state\0").unwrap();
+    let ivar = object.class().instance_variable(ivar_name).expect("state ivar missing");
+    let raw: *const c_void = *ivar.load::<*const c_void>(object);
     Weak::from_raw(raw as *const RefCell<StatusItemState>);
+}
+extern_methods! {
+    unsafe impl objc2_app_kit::NSStatusItem {
+        #[unsafe(method(button))]
+        fn button_ptr(&self) -> *mut Object;
+    }
 }

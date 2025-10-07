@@ -3,8 +3,10 @@ use crate::{
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
     Surface, Underline,
 };
-use objc::{class, msg_send, sel, sel_impl};
-use objc::runtime::{Object, BOOL, YES, NO};
+use objc2::{class, msg_send, sel};
+use objc2::runtime::{AnyObject as Object, Bool as BOOL};
+const YES: BOOL = objc2::runtime::Bool::YES;
+const NO:  BOOL = objc2::runtime::Bool::NO;
 use std::{ffi::c_void, mem, ptr, sync::Arc};
 use parking_lot::Mutex;
 use std::collections::HashSet;
@@ -1050,6 +1052,25 @@ pub unsafe fn new_renderer(
     Metal4Renderer::new(context)
 }
 
+pub unsafe fn new_renderer_with_layer(
+    context: self::Context,
+    external_layer_ptr: *mut c_void,
+) -> Renderer {
+    let mut renderer = Metal4Renderer::new(context);
+    // Adopt external CAMetalLayer provided by Swift
+    let layer_ref: &CAMetalLayer = &*(external_layer_ptr as *mut CAMetalLayer);
+    let retained = objc2::rc::Retained::retain(layer_ref as *const _ as *mut CAMetalLayer)
+        .expect("retain CAMetalLayer");
+    // Configure the external layer similar to the default
+    retained.setAllowsNextDrawableTimeout(false);
+    retained.setOpaque(false);
+    retained.setMaximumDrawableCount(3);
+    retained.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+    retained.setDevice(Some(&renderer.device));
+    renderer.layer = retained;
+    renderer
+}
+
 // Minimal atlas stub implementing PlatformAtlas. This will be replaced with real uploads.
 use crate::platform::{AtlasKey, AtlasTextureKind, AtlasTile, PlatformAtlas};
 use anyhow::Result;
@@ -1204,7 +1225,7 @@ impl Metal4AtlasState {
                 index: index.unwrap_or(textures.textures.len()) as u32,
                 kind,
             },
-            allocator: BucketedAtlasAllocator::new(size.into()),
+            allocator: BucketedAtlasAllocator::new(etagere::Size::new(size.width.into(), size.height.into())),
             metal_texture: AssertSendSync(metal_texture),
             live_atlas_keys: 0,
         };
@@ -1247,7 +1268,8 @@ struct Metal4AtlasTexture {
 
 impl Metal4AtlasTexture {
     fn allocate(&mut self, size: Size<DevicePixels>) -> Option<AtlasTile> {
-        let allocation = self.allocator.allocate(size.into())?;
+        let req = etagere::Size::new(size.width.into(), size.height.into());
+        let allocation = self.allocator.allocate(req)?;
         let tile = AtlasTile {
             texture_id: self.id,
             tile_id: allocation.id.into(),
@@ -1309,3 +1331,29 @@ struct AssertSend<T>(T);
 unsafe impl<T> Send for AssertSend<T> {}
 
 // Conversions are provided in metal_atlas.rs
+impl From<etagere::Point> for crate::Point<crate::DevicePixels> {
+    fn from(value: etagere::Point) -> Self {
+        crate::Point {
+            x: crate::DevicePixels::from(value.x),
+            y: crate::DevicePixels::from(value.y),
+        }
+    }
+}
+
+impl From<etagere::Size> for crate::Size<crate::DevicePixels> {
+    fn from(size: etagere::Size) -> Self {
+        crate::Size {
+            width: crate::DevicePixels::from(size.width),
+            height: crate::DevicePixels::from(size.height),
+        }
+    }
+}
+
+impl From<etagere::Rectangle> for crate::Bounds<crate::DevicePixels> {
+    fn from(rectangle: etagere::Rectangle) -> Self {
+        crate::Bounds {
+            origin: rectangle.min.into(),
+            size: rectangle.size().into(),
+        }
+    }
+}

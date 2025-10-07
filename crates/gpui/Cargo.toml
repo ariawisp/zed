@@ -12,7 +12,24 @@ license = "Apache-2.0"
 workspace = true
 
 [features]
-default = ["font-kit", "wayland", "x11", "windows-manifest", "objc2", "objc2-foundation", "objc2-app-kit", "objc2-quartz-core"]
+default = [
+    "font-kit",
+    "wayland",
+    "x11",
+    "windows-manifest",
+    # objc2 migration defaults
+    "objc2",
+    "objc2-foundation",
+    "objc2-app-kit",
+    "objc2-quartz-core",
+    # Use the objc2 Metal 4 renderer by default on macOS
+    "macos-metal4",
+]
+macos-swift = [
+    # Enable Swift AppKit FFI bridge (off by default)
+    # Uses libloading at runtime to dlopen the Swift dylib
+    "libloading",
+]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -40,6 +57,7 @@ macos-blade = [
     "bytemuck",
     "objc2",
     "objc2-metal",
+    "metal",
 ]
 wayland = [
     "blade-graphics",
@@ -141,7 +159,6 @@ libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block = "0.1"
-cocoa.workspace = true
 core-foundation.workspace = true
 core-foundation-sys.workspace = true
 core-graphics = "0.24"
@@ -151,7 +168,7 @@ font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "5474cfad
 foreign-types = "0.5"
 log.workspace = true
 media.workspace = true
-objc.workspace = true
+# objc2 stacks are used instead of legacy objc crate
 objc2 = { version = "0.6.3", optional = true }
 objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = [
     "NSApplication",
@@ -199,9 +216,11 @@ objc2-foundation = { version = "0.3.2", optional = true, features = [
     "NSBundle",
 ] }
 objc2-core-foundation = { version = "0.3.2", optional = true }
-#TODO: replace with "objc2"
-metal.workspace = true
 block2 = { version = "0.6.2", optional = false }
+libloading = { version = "0.8", optional = true }
+
+# Legacy Metal crate is retained only for optional blade path
+metal = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies]
 pathfinder_geometry = "0.5"

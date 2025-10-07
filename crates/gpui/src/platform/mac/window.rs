@@ -1,4 +1,5 @@
-use super::{BoolExt, MacDisplay, NSRange, renderer};
+use super::{BoolExt, MacDisplay, NSRange, NSRangeExt, renderer};
+use crate::platform::mac::shims;
 use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
@@ -9,14 +10,13 @@ use crate::{
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
 };
 use block2::StackBlock;
-use cocoa::{
-    appkit::{
-        NSBackingStoreBuffered,
-        NSWindowButton,
-    },
-    base::{id, nil},
-    foundation::NSInteger,
-};
+use objc2_app_kit::NSWindowButton;
+use objc2::ffi::nil;
+use objc2_foundation::NSInteger;
+// Objective-C bridge types and constants
+#[allow(non_camel_case_types)]
+type id = *mut objc2::runtime::AnyObject;
+const NSBackingStoreBuffered: NSInteger = 2; // Buffered backing store
 use objc2_app_kit::{
     NSAppKitVersionNumber, NSAppKitVersionNumber12_0, NSDraggingInfo as ObjNSDraggingInfo,
     NSPasteboardTypeFileURL, NSTrackingAreaOptions, NSViewLayerContentsRedrawPolicy,
@@ -28,15 +28,19 @@ use objc2_foundation::{NSArray as ObjNSArray, NSURL as ObjNSURL, NSString as Obj
 use objc2_quartz_core::CALayer;
 /* objc2 dynamic class migration pending for window.rs */
 
-use core_graphics::display::{CGDirectDisplayID, CGPoint, CGRect};
+use core_graphics::display::CGDirectDisplayID;
 use ctor::ctor;
 use futures::channel::oneshot;
-use objc::{
-    class,
-    msg_send,
-    runtime::{BOOL, Class, NO, Object, Protocol, Sel, YES},
-    sel, sel_impl,
-};
+use objc2::{class, sel, msg_send};
+type BOOL = objc2::runtime::Bool;
+const YES: BOOL = objc2::runtime::Bool::YES;
+const NO: BOOL = objc2::runtime::Bool::NO;
+type Class = objc2::runtime::AnyClass;
+type Object = objc2::runtime::AnyObject;
+type Protocol = objc2::runtime::AnyProtocol;
+type Sel = objc2::runtime::Sel;
+use objc2::runtime::{AnyProtocol as Objc2AnyProtocol, ClassBuilder as Objc2ClassBuilder};
+use std::ffi::CStr;
 use parking_lot::Mutex;
 use raw_window_handle as rwh;
 use smallvec::SmallVec;
@@ -87,244 +91,135 @@ unsafe extern "C" {
 
 #[ctor]
 unsafe fn build_classes() {
-    unsafe {
-        WINDOW_CLASS = build_window_class("GPUIWindow", class!(NSWindow));
-        PANEL_CLASS = build_window_class("GPUIPanel", class!(NSPanel));
-        VIEW_CLASS = {
-            let mut decl = ClassDecl::new("GPUIView", class!(NSView)).unwrap();
-            decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
-            unsafe {
-                decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
-
-                decl.add_method(
-                    sel!(performKeyEquivalent:),
-                    handle_key_equivalent as extern "C" fn(&Object, Sel, id) -> BOOL,
-                );
-                decl.add_method(sel!(keyDown:), handle_key_down as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(keyUp:), handle_key_up as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(
-                    sel!(rightMouseDown:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(rightMouseUp:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(mouseExited:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(swipeWithEvent:), handle_view_event as extern "C" fn(&Object, Sel, id));
-                decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(&Object, Sel, id));
-
-                decl.add_method(
-                    sel!(makeBackingLayer),
-                    make_backing_layer as extern "C" fn(&Object, Sel) -> id,
-                );
-
-                decl.add_protocol(Protocol::get("CALayerDelegate").unwrap());
-                decl.add_method(
-                    sel!(viewDidChangeBackingProperties),
-                    view_did_change_backing_properties as extern "C" fn(&Object, Sel),
-                );
-                decl.add_method(
-                    sel!(setFrameSize:),
-                    set_frame_size as extern "C" fn(&Object, Sel, cocoa::foundation::NSSize),
-                );
-                decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(&Object, Sel, id));
-
-                decl.add_protocol(Protocol::get("NSTextInputClient").unwrap());
-                decl.add_method(
-                    sel!(validAttributesForMarkedText),
-                    valid_attributes_for_marked_text as extern "C" fn(&Object, Sel) -> id,
-                );
-                decl.add_method(sel!(hasMarkedText), has_marked_text as extern "C" fn(&Object, Sel) -> BOOL);
-                decl.add_method(sel!(markedRange), marked_range as extern "C" fn(&Object, Sel) -> NSRange);
-                decl.add_method(sel!(selectedRange), selected_range as extern "C" fn(&Object, Sel) -> NSRange);
-                decl.add_method(
-                    sel!(firstRectForCharacterRange:actualRange:),
-                    first_rect_for_character_range as extern "C" fn(&Object, Sel, NSRange, id) -> cocoa::foundation::NSRect,
-                );
-                decl.add_method(
-                    sel!(insertText:replacementRange:),
-                    insert_text as extern "C" fn(&Object, Sel, id, NSRange),
-                );
-                decl.add_method(
-                    sel!(setMarkedText:selectedRange:replacementRange:),
-                    set_marked_text as extern "C" fn(&Object, Sel, id, NSRange, NSRange),
-                );
-                decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(&Object, Sel));
-                decl.add_method(
-                    sel!(attributedSubstringForProposedRange:actualRange:),
-                    attributed_substring_for_proposed_range as extern "C" fn(&Object, Sel, NSRange, *mut c_void) -> id,
-                );
-                decl.add_method(
-                    sel!(viewDidChangeEffectiveAppearance),
-                    view_did_change_effective_appearance as extern "C" fn(&Object, Sel),
-                );
-
-                decl.add_method(
-                    sel!(doCommandBySelector:),
-                    do_command_by_selector as extern "C" fn(&Object, Sel, Sel),
-                );
-                decl.add_method(
-                    sel!(acceptsFirstMouse:),
-                    accepts_first_mouse as extern "C" fn(&Object, Sel, id) -> BOOL,
-                );
-                decl.add_method(
-                    sel!(characterIndexForPoint:),
-                    character_index_for_point as extern "C" fn(&Object, Sel, cocoa::foundation::NSPoint) -> u64,
-                );
-            }
-            decl.register()
-        };
-        BLURRED_VIEW_CLASS = {
-            let mut decl = ClassDecl::new("BlurredView", class!(NSVisualEffectView)).unwrap();
-            unsafe {
-                decl.add_method(
-                    sel!(initWithFrame:),
-                    blurred_view_init_with_frame as extern "C" fn(&Object, Sel, cocoa::foundation::NSRect) -> id,
-                );
-                decl.add_method(sel!(updateLayer), blurred_view_update_layer as extern "C" fn(&Object, Sel));
-                decl.register()
-            }
-        };
-        return;
-        /* Register GPUIWindow (objc2 version commented out)
-        let mut window_decl = Objc2ClassBuilder::new(
-            CStr::from_bytes_with_nul(b"GPUIWindow\0").unwrap(),
-            objc2::class!(NSWindow),
-        )
-        .expect("allocate GPUIWindow");
-        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
-            window_decl.add_protocol(proto);
-        }
-        window_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
-        window_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
-        window_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
-        window_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
-        window_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
-        window_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
-        window_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
-        window_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
-        window_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
-        window_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
-        window_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
-        WINDOW_CLASS = window_decl.register();
-
-        // Register GPUIPanel
-        let mut panel_decl = Objc2ClassBuilder::new(
-            CStr::from_bytes_with_nul(b"GPUIPanel\0").unwrap(),
-            objc2::class!(NSPanel),
-        )
-        .expect("allocate GPUIPanel");
-        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
-            panel_decl.add_protocol(proto);
-        }
-        panel_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
-        panel_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
-        panel_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
-        panel_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
-        panel_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
-        panel_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
-        panel_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
-        panel_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
-        panel_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
-        panel_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
-        panel_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
-        PANEL_CLASS = panel_decl.register();
-
-        // Register GPUIView
-        let mut view_decl = Objc2ClassBuilder::new(
-            CStr::from_bytes_with_nul(b"GPUIView\0").unwrap(),
-            objc2::class!(NSView),
-        )
-        .expect("allocate GPUIView");
-        view_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
-        view_decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(_, _));
-        view_decl.add_method(sel!(performKeyEquivalent:), handle_key_equivalent as extern "C" fn(_, _, _) -> _);
-        view_decl.add_method(sel!(keyDown:), handle_key_down as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(keyUp:), handle_key_up as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(rightMouseDown:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(rightMouseUp:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(mouseExited:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(swipeWithEvent:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(makeBackingLayer), make_backing_layer as extern "C" fn(_, _) -> _);
-        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"CALayerDelegate\0").unwrap()) {
-            view_decl.add_protocol(proto);
-        }
-        view_decl.add_method(sel!(viewDidChangeBackingProperties), view_did_change_backing_properties as extern "C" fn(_, _));
-        view_decl.add_method(sel!(setFrameSize:), set_frame_size as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(_, _, _));
-        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSTextInputClient\0").unwrap()) {
-            view_decl.add_protocol(proto);
-        }
-        view_decl.add_method(sel!(validAttributesForMarkedText), valid_attributes_for_marked_text as extern "C" fn(_, _) -> _);
-        view_decl.add_method(sel!(hasMarkedText), has_marked_text as extern "C" fn(_, _) -> _);
-        view_decl.add_method(sel!(markedRange), marked_range as extern "C" fn(_, _) -> _);
-        view_decl.add_method(sel!(selectedRange), selected_range as extern "C" fn(_, _) -> _);
-        view_decl.add_method(sel!(firstRectForCharacterRange:actualRange:), first_rect_for_character_range as extern "C" fn(_, _, _, _) -> _);
-        view_decl.add_method(sel!(insertText:replacementRange:), insert_text as extern "C" fn(_, _, _, _));
-        view_decl.add_method(sel!(setMarkedText:selectedRange:replacementRange:), set_marked_text as extern "C" fn(_, _, _, _, _));
-        view_decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(_, _));
-        view_decl.add_method(sel!(attributedSubstringForProposedRange:actualRange:), attributed_substring_for_proposed_range as extern "C" fn(_, _, _, _) -> _);
-        view_decl.add_method(sel!(viewDidChangeEffectiveAppearance), view_did_change_effective_appearance as extern "C" fn(_, _));
-        view_decl.add_method(sel!(doCommandBySelector:), do_command_by_selector as extern "C" fn(_, _, _));
-        view_decl.add_method(sel!(acceptsFirstMouse:), accepts_first_mouse as extern "C" fn(_, _, _) -> _);
-        view_decl.add_method(sel!(characterIndexForPoint:), character_index_for_point as extern "C" fn(_, _, _) -> _);
-        VIEW_CLASS = view_decl.register();
-
-        // Register BlurredView
-        let mut blur_decl = Objc2ClassBuilder::new(
-            CStr::from_bytes_with_nul(b"BlurredView\0").unwrap(),
-            objc2::class!(NSVisualEffectView),
-        )
-        .expect("allocate BlurredView");
-        blur_decl.add_method(sel!(initWithFrame:), blurred_view_init_with_frame as extern "C" fn(_, _, _) -> _);
-        blur_decl.add_method(sel!(updateLayer), blurred_view_update_layer as extern "C" fn(_, _));
-        BLURRED_VIEW_CLASS = blur_decl.register();
-        */
+    // Register GPUIWindow (objc2)
+    let mut window_decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"GPUIWindow\0").unwrap(),
+        objc2::class!(NSWindow),
+    )
+    .expect("allocate GPUIWindow");
+    if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
+        window_decl.add_protocol(proto);
     }
+    window_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+    window_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
+    window_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
+    window_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
+    window_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
+    window_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
+    window_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
+    window_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
+    window_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
+    window_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
+    window_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
+    unsafe { WINDOW_CLASS = window_decl.register(); }
+
+    // Register GPUIPanel (objc2)
+    let mut panel_decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"GPUIPanel\0").unwrap(),
+        objc2::class!(NSPanel),
+    )
+    .expect("allocate GPUIPanel");
+    if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
+        panel_decl.add_protocol(proto);
+    }
+    panel_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+    panel_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
+    panel_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
+    panel_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
+    panel_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
+    panel_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
+    panel_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
+    panel_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
+    panel_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
+    panel_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
+    panel_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
+    unsafe { PANEL_CLASS = panel_decl.register(); }
+
+    // Register GPUIView (objc2)
+    let mut view_decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"GPUIView\0").unwrap(),
+        objc2::class!(NSView),
+    )
+    .expect("allocate GPUIView");
+    view_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+    view_decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(_, _));
+    view_decl.add_method(sel!(performKeyEquivalent:), handle_key_equivalent as extern "C" fn(_, _, _) -> _);
+    view_decl.add_method(sel!(keyDown:), handle_key_down as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(keyUp:), handle_key_up as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(rightMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(rightMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(mouseExited:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(swipeWithEvent:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(makeBackingLayer), make_backing_layer as extern "C" fn(_, _) -> _);
+    if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"CALayerDelegate\0").unwrap()) {
+        view_decl.add_protocol(proto);
+    }
+    view_decl.add_method(sel!(viewDidChangeBackingProperties), view_did_change_backing_properties as extern "C" fn(_, _));
+    view_decl.add_method(sel!(setFrameSize:), set_frame_size as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(_, _, _));
+    if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSTextInputClient\0").unwrap()) {
+        view_decl.add_protocol(proto);
+    }
+    view_decl.add_method(sel!(validAttributesForMarkedText), valid_attributes_for_marked_text as extern "C" fn(_, _) -> _);
+    view_decl.add_method(sel!(hasMarkedText), has_marked_text as extern "C" fn(_, _) -> _);
+    view_decl.add_method(sel!(markedRange), marked_range as extern "C" fn(_, _) -> _);
+    view_decl.add_method(sel!(selectedRange), selected_range as extern "C" fn(_, _) -> _);
+    view_decl.add_method(sel!(firstRectForCharacterRange:actualRange:), first_rect_for_character_range as extern "C" fn(_, _, _, _) -> _);
+    view_decl.add_method(sel!(insertText:replacementRange:), insert_text as extern "C" fn(_, _, _, _));
+    view_decl.add_method(sel!(setMarkedText:selectedRange:replacementRange:), set_marked_text as extern "C" fn(_, _, _, _, _));
+    view_decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(_, _));
+    view_decl.add_method(sel!(attributedSubstringForProposedRange:actualRange:), attributed_substring_for_proposed_range as extern "C" fn(_, _, _, _) -> _);
+    view_decl.add_method(sel!(viewDidChangeEffectiveAppearance), view_did_change_effective_appearance as extern "C" fn(_, _));
+    view_decl.add_method(sel!(doCommandBySelector:), do_command_by_selector as extern "C" fn(_, _, _));
+    view_decl.add_method(sel!(acceptsFirstMouse:), accepts_first_mouse as extern "C" fn(_, _, _) -> _);
+    view_decl.add_method(sel!(characterIndexForPoint:), character_index_for_point as extern "C" fn(_, _, _) -> _);
+    unsafe { VIEW_CLASS = view_decl.register(); }
+
+    // Register BlurredView (objc2)
+    let mut blur_decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"BlurredView\0").unwrap(),
+        objc2::class!(NSVisualEffectView),
+    )
+    .expect("allocate BlurredView");
+    blur_decl.add_method(sel!(initWithFrame:), blurred_view_init_with_frame as extern "C" fn(_, _, _) -> _);
+    blur_decl.add_method(sel!(updateLayer), blurred_view_update_layer as extern "C" fn(_, _));
+    unsafe { BLURRED_VIEW_CLASS = blur_decl.register(); }
 }
 
 pub(crate) fn convert_mouse_position(position: objc2_foundation::NSPoint, window_height: Pixels) -> Point<Pixels> {
@@ -382,22 +277,23 @@ impl MacWindowState {
             let titlebar_height = self.titlebar_height();
 
             unsafe {
-                let close_button: id = msg_send![
-                    self.native_window,
-                    standardWindowButton: NSWindowButton::NSWindowCloseButton
-                ];
-                let min_button: id = msg_send![
-                    self.native_window,
-                    standardWindowButton: NSWindowButton::NSWindowMiniaturizeButton
-                ];
-                let zoom_button: id = msg_send![
-                    self.native_window,
-                    standardWindowButton: NSWindowButton::NSWindowZoomButton
-                ];
+                let wref: &objc2_app_kit::NSWindow = &*(self.native_window as *mut objc2_app_kit::NSWindow);
+                let close_button: id = window_standard_button(wref, NSWindowButton::CloseButton);
+                let min_button: id = window_standard_button(wref, NSWindowButton::MiniaturizeButton);
+                let zoom_button: id = window_standard_button(wref, NSWindowButton::ZoomButton);
 
-                let mut close_button_frame: CGRect = msg_send![close_button, frame];
-                let mut min_button_frame: CGRect = msg_send![min_button, frame];
-                let mut zoom_button_frame: CGRect = msg_send![zoom_button, frame];
+                let mut close_button_frame: objc2_foundation::NSRect = {
+                    let v: &objc2_app_kit::NSView = &*(close_button as *mut objc2_app_kit::NSView);
+                    v.frame()
+                };
+                let mut min_button_frame: objc2_foundation::NSRect = {
+                    let v: &objc2_app_kit::NSView = &*(min_button as *mut objc2_app_kit::NSView);
+                    v.frame()
+                };
+                let mut zoom_button_frame: objc2_foundation::NSRect = {
+                    let v: &objc2_app_kit::NSView = &*(zoom_button as *mut objc2_app_kit::NSView);
+                    v.frame()
+                };
                 let mut origin = point(
                     traffic_light_position.x,
                     titlebar_height
@@ -407,16 +303,25 @@ impl MacWindowState {
                 let button_spacing =
                     px((min_button_frame.origin.x - close_button_frame.origin.x) as f32);
 
-                close_button_frame.origin = CGPoint::new(origin.x.into(), origin.y.into());
-                let _: () = msg_send![close_button, setFrame: close_button_frame];
+                close_button_frame.origin = objc2_foundation::NSPoint::new(origin.x.into(), origin.y.into());
+                {
+                    let v: &objc2_app_kit::NSView = &*(close_button as *mut objc2_app_kit::NSView);
+                    v.setFrame(close_button_frame);
+                }
                 origin.x += button_spacing;
 
-                min_button_frame.origin = CGPoint::new(origin.x.into(), origin.y.into());
-                let _: () = msg_send![min_button, setFrame: min_button_frame];
+                min_button_frame.origin = objc2_foundation::NSPoint::new(origin.x.into(), origin.y.into());
+                {
+                    let v: &objc2_app_kit::NSView = &*(min_button as *mut objc2_app_kit::NSView);
+                    v.setFrame(min_button_frame);
+                }
                 origin.x += button_spacing;
 
-                zoom_button_frame.origin = CGPoint::new(origin.x.into(), origin.y.into());
-                let _: () = msg_send![zoom_button, setFrame: zoom_button_frame];
+                zoom_button_frame.origin = objc2_foundation::NSPoint::new(origin.x.into(), origin.y.into());
+                {
+                    let v: &objc2_app_kit::NSView = &*(zoom_button as *mut objc2_app_kit::NSView);
+                    v.setFrame(zoom_button_frame);
+                }
                 origin.x += button_spacing;
             }
         }
@@ -515,7 +420,7 @@ impl MacWindowState {
         // Use typed NSWindow frame and contentLayoutRect
         let win: &objc2_app_kit::NSWindow = unsafe { &*(self.native_window as *mut objc2_app_kit::NSWindow) };
         let frame: objc2_foundation::NSRect = win.frame();
-        let content_layout_rect: CGRect = unsafe { msg_send![self.native_window, contentLayoutRect] };
+        let content_layout_rect: objc2_foundation::NSRect = win.contentLayoutRect();
         px((frame.size.height - content_layout_rect.size.height) as f32)
     }
 
@@ -596,7 +501,7 @@ impl MacWindow {
             let mut target_screen = nil;
             let mut screen_frame = None;
 
-            let screens_id: id = msg_send![class!(NSScreen), screens];
+            let screens_id: id = unsafe { shims::nsscreen_screens() };
             let screens: &objc2_foundation::NSArray<objc2_app_kit::NSScreen> =
                 unsafe { &*(screens_id as *mut objc2_foundation::NSArray<objc2_app_kit::NSScreen>) };
             for i in 0..screens.len() {
@@ -605,13 +510,13 @@ impl MacWindow {
                 let display_id = display_id_for_typed_screen(&*sref);
                 if display_id == display.0 {
                     screen_frame = Some(frame);
-                    let sid: id = objc2::rc::Retained::as_ptr(&sref) as *mut objc::runtime::Object;
+                    let sid: id = objc2::rc::Retained::as_ptr(&sref) as *mut objc2::runtime::AnyObject;
                     target_screen = sid;
                 }
             }
 
             let screen_frame = screen_frame.unwrap_or_else(|| {
-                let screen: id = msg_send![class!(NSScreen), mainScreen];
+                let screen: id = unsafe { shims::nsscreen_main() };
                 target_screen = screen;
                 let sref: &objc2_app_kit::NSScreen = unsafe { &*(screen as *mut objc2_app_kit::NSScreen) };
                 sref.frame()
@@ -628,10 +533,10 @@ impl MacWindow {
 
             let native_window: id = msg_send![
                 native_window,
-                initWithContentRect: window_rect
-                styleMask: style_mask
-                backing: NSBackingStoreBuffered
-                defer: NO
+                initWithContentRect: window_rect,
+                styleMask: style_mask,
+                backing: NSBackingStoreBuffered,
+                defer: NO,
                 screen: target_screen
             ];
             assert!(!native_window.is_null());
@@ -644,7 +549,14 @@ impl MacWindow {
                 setReleasedWhenClosed: NO
             ];
 
-            let content_view: id = msg_send![native_window, contentView];
+            let content_view: id = {
+                let wref: &objc2_app_kit::NSWindow = &*(native_window as *mut objc2_app_kit::NSWindow);
+                if let Some(v) = wref.contentView() {
+                    objc2::rc::Retained::as_ptr(&v) as *mut objc2::runtime::AnyObject
+                } else {
+                    std::ptr::null_mut()
+                }
+            };
             let native_view: id = msg_send![VIEW_CLASS, alloc];
             let content_bounds: objc2_foundation::NSRect = msg_send![content_view, bounds];
             let native_view: id = msg_send![native_view, initWithFrame: content_bounds];
@@ -696,10 +608,12 @@ impl MacWindow {
                 activated_least_once: false,
             })));
 
-            (*native_window).set_ivar(
-                WINDOW_STATE_IVAR,
-                Arc::into_raw(window.0.clone()) as *const c_void,
-            );
+            {
+                let ivar_name = CStr::from_bytes_with_nul(b"windowState\0").unwrap();
+                let win_obj: &mut objc2::runtime::AnyObject = &mut * (native_window as *mut objc2::runtime::AnyObject);
+                let ivar = win_obj.class().instance_variable(ivar_name).expect("windowState ivar missing");
+                unsafe { *ivar.load_mut::<*const c_void>(win_obj) = Arc::into_raw(window.0.clone()) as *const c_void; }
+            }
             // Set typed delegate to our window subclass instance
             {
                 let wref: &objc2_app_kit::NSWindow = &*(native_window as *mut objc2_app_kit::NSWindow);
@@ -707,10 +621,12 @@ impl MacWindow {
                     &*(native_window as *mut ProtocolObject<dyn objc2_app_kit::NSWindowDelegate>);
                 wref.setDelegate(Some(delegate_ref));
             }
-            (*native_view).set_ivar(
-                WINDOW_STATE_IVAR,
-                Arc::into_raw(window.0.clone()) as *const c_void,
-            );
+            {
+                let ivar_name = CStr::from_bytes_with_nul(b"windowState\0").unwrap();
+                let view_obj: &mut objc2::runtime::AnyObject = &mut * (native_view as *mut objc2::runtime::AnyObject);
+                let ivar = view_obj.class().instance_variable(ivar_name).expect("windowState ivar missing");
+                unsafe { *ivar.load_mut::<*const c_void>(view_obj) = Arc::into_raw(window.0.clone()) as *const c_void; }
+            }
 
             if let Some(title) = titlebar
                 .as_ref()
@@ -780,7 +696,7 @@ impl MacWindow {
                         let tabbing_id_ref: &objc2_foundation::NSString = &*tabbing_id;
                         let _: () = msg_send![native_window, setTabbingIdentifier: tabbing_id_ref];
                     } else {
-                        let _: () = msg_send![native_window, setTabbingIdentifier: std::ptr::null_mut::<objc::runtime::Object>()];
+                        let _: () = msg_send![native_window, setTabbingIdentifier: objc2::ffi::nil];
                     }
                 }
                 WindowKind::PopUp => {
@@ -792,15 +708,8 @@ impl MacWindow {
                         | NSTrackingAreaOptions::MouseMoved
                         | NSTrackingAreaOptions::ActiveAlways
                         | NSTrackingAreaOptions::InVisibleRect;
-                    let tracking_area: id = msg_send![class!(NSTrackingArea), alloc];
-                    let tracking_area: id = msg_send![
-                        tracking_area,
-                        initWithRect: rect
-                        options: options
-                        owner: native_view
-                        userInfo: nil
-                    ];
-                    let _: () = msg_send![tracking_area, autorelease];
+                    let tracking_area: id = unsafe { shims::nstrackingarea_init(rect, options, native_view, objc2::ffi::nil) };
+                    unsafe { shims::nsobject_autorelease(tracking_area) };
                     let _: () = msg_send![native_view, addTrackingArea: tracking_area];
 
                     {
@@ -819,7 +728,7 @@ impl MacWindow {
             let main_window: *mut objc2::runtime::AnyObject = objc2::msg_send![&*app, mainWindow];
             if allows_automatic_window_tabbing
                 && !main_window.is_null()
-                && (main_window as *mut objc::runtime::Object) != native_window
+                && (main_window as *mut objc2::runtime::AnyObject) != native_window
             {
                 let main_window_is_fullscreen = {
                     let ev: &objc2::runtime::AnyObject = &*(main_window as *mut objc2::runtime::AnyObject);
@@ -838,9 +747,9 @@ impl MacWindow {
                     let main_window_visible: bool = objc2::msg_send![&*main_window, isVisible];
 
                     if main_window_can_tab && main_window_visible {
-                        let win_obj_objc: &objc::runtime::Object = &*(main_window as *mut objc::runtime::Object);
+                        let win_obj_objc: &objc2::runtime::AnyObject = &*(main_window as *mut objc2::runtime::AnyObject);
                         // Pass primitive for NSWindowOrderingMode::Above (1)
-                        let _: () = msg_send![win_obj_objc, addTabbedWindow: native_window ordered: 1_i64];
+                        let _: () = msg_send![win_obj_objc, addTabbedWindow: native_window, ordered: 1_i64];
 
                         // Ensure the window is visible immediately after adding the tab, since the tab bar is updated with a new entry at this point.
                         // Note: Calling orderFront here can break fullscreen mode (makes fullscreen windows exit fullscreen), so only do this if the main window is not fullscreen.
@@ -886,7 +795,7 @@ impl MacWindow {
                 return None;
             }
 
-            let win_obj: &objc::runtime::Object = &*(main_window as *mut objc::runtime::Object);
+            let win_obj: &objc2::runtime::AnyObject = &*(main_window as *mut objc2::runtime::AnyObject);
             if msg_send![win_obj, isKindOfClass: WINDOW_CLASS] {
                 let handle = get_window_state(win_obj).lock().handle;
                 Some(handle)
@@ -906,9 +815,9 @@ impl MacWindow {
             let mut window_handles = Vec::new();
             for i in 0..windows.len() {
                 let window = windows.objectAtIndex(i as objc2_foundation::NSUInteger);
-                let win_obj: &objc::runtime::Object = &*(
+                let win_obj: &objc2::runtime::AnyObject = &*(
                     (&*window as *const objc2_app_kit::NSWindow)
-                        as *mut objc::runtime::Object
+                        as *mut objc2::runtime::AnyObject
                 );
                 if msg_send![win_obj, isKindOfClass: WINDOW_CLASS] {
                     let handle = get_window_state(win_obj).lock().handle;
@@ -1045,13 +954,13 @@ impl PlatformWindow for MacWindow {
                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: NO];
             }
 
-            if let Some(tabbing_identifier) = tabbing_identifier {
-                let tabbing_id = objc2_foundation::NSString::from_str(tabbing_identifier.as_str());
-                let tabbing_id_ref: &objc2_foundation::NSString = &*tabbing_id;
-                let _: () = msg_send![native_window, setTabbingIdentifier: tabbing_id_ref];
-            } else {
-                let _: () = msg_send![native_window, setTabbingIdentifier: std::ptr::null_mut::<objc::runtime::Object>()];
-            }
+                    if let Some(tabbing_identifier) = tabbing_identifier {
+                        let tabbing_id = objc2_foundation::NSString::from_str(tabbing_identifier.as_str());
+                        let tabbing_id_ref: &objc2_foundation::NSString = &*tabbing_id;
+                        let _: () = msg_send![native_window, setTabbingIdentifier: tabbing_id_ref];
+                    } else {
+                        let _: () = msg_send![native_window, setTabbingIdentifier: objc2::ffi::nil];
+                    }
         }
     }
 
@@ -1323,7 +1232,7 @@ impl PlatformWindow for MacWindow {
                         this.blurred_view = None;
                     }
                 } else if this.blurred_view.is_none() {
-                    let win_any_objc: &objc::runtime::Object = &*(this.native_window as *mut objc::runtime::Object);
+                    let win_any_objc: &objc2::runtime::AnyObject = &*(this.native_window as *mut objc2::runtime::AnyObject);
                     let content_view: id = msg_send![win_any_objc, contentView];
                     let frame: objc2_foundation::NSRect = msg_send![content_view, bounds];
                     let mut blur_view: id = msg_send![BLURRED_VIEW_CLASS, alloc];
@@ -1354,7 +1263,7 @@ impl PlatformWindow for MacWindow {
     fn set_edited(&mut self, edited: bool) {
         unsafe {
             let window = self.0.lock().native_window;
-            msg_send![window, setDocumentEdited: edited as BOOL]
+            msg_send![window, setDocumentEdited: edited.to_objc()]
         }
 
         // Changing the document edited state resets the traffic light position,
@@ -1473,9 +1382,9 @@ impl PlatformWindow for MacWindow {
             let mut result = Vec::new();
             for i in 0..windows.len() {
                 let window = windows.objectAtIndex(i as objc2_foundation::NSUInteger);
-                let win_obj: &objc::runtime::Object = &*(
+                let win_obj: &objc2::runtime::AnyObject = &*(
                     (&*window as *const objc2_app_kit::NSWindow)
-                        as *mut objc::runtime::Object
+                        as *mut objc2::runtime::AnyObject
                 );
             {
                 if msg_send![win_obj, isKindOfClass: WINDOW_CLASS] {
@@ -1729,7 +1638,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
     let run_callback = |event: PlatformInput| -> BOOL {
         let mut callback = window_state.as_ref().lock().event_callback.take();
         let handled: BOOL = if let Some(callback) = callback.as_mut() {
-            !callback(event).propagate as BOOL
+            objc2::runtime::Bool::from(!callback(event).propagate)
         } else {
             NO
         };
@@ -1782,7 +1691,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                 };
                 window_state.as_ref().lock().keystroke_for_do_command.take();
                 if let Some(handled) = window_state.as_ref().lock().do_command_handled.take() {
-                    return handled as BOOL;
+                    return objc2::runtime::Bool::from(handled);
                 } else if handled == YES {
                     return YES;
                 }
@@ -2115,7 +2024,7 @@ extern "C" fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
         drop(lock);
         let should_close = callback();
         window_state.lock().should_close_callback = Some(callback);
-        should_close as BOOL
+        objc2::runtime::Bool::from(should_close)
     } else {
         YES
     }
@@ -2168,7 +2077,7 @@ extern "C" fn view_did_change_backing_properties(this: &Object, _: Sel) {
     };
 }
 
-extern "C" fn set_frame_size(this: &Object, _: Sel, size: cocoa::foundation::NSSize) {
+extern "C" fn set_frame_size(this: &Object, _: Sel, size: objc2_foundation::NSSize) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
 
@@ -2238,8 +2147,7 @@ extern "C" fn valid_attributes_for_marked_text(_: &Object, _: Sel) -> id {
 extern "C" fn has_marked_text(this: &Object, _: Sel) -> BOOL {
     let has_marked_text_result =
         with_input_handler(this, |input_handler| input_handler.marked_text_range()).flatten();
-
-    has_marked_text_result.is_some() as BOOL
+    objc2::runtime::Bool::from(has_marked_text_result.is_some())
 }
 
 extern "C" fn marked_range(this: &Object, _: Sel) -> NSRange {
@@ -2263,14 +2171,17 @@ extern "C" fn first_rect_for_character_range(
     _: Sel,
     range: NSRange,
     _: id,
-) -> cocoa::foundation::NSRect {
+) -> objc2_foundation::NSRect {
     let frame = get_frame(this);
     with_input_handler(this, |input_handler| {
         input_handler.bounds_for_range(range.to_range()?)
     })
     .flatten()
     .map_or_else(
-        || unsafe { std::mem::transmute::<objc2_foundation::NSRect, cocoa::foundation::NSRect>(objc2_foundation::NSRect::new(objc2_foundation::NSPoint::new(0., 0.), objc2_foundation::NSSize::new(0., 0.))) },
+        || objc2_foundation::NSRect::new(
+            objc2_foundation::NSPoint::new(0., 0.),
+            objc2_foundation::NSSize::new(0., 0.),
+        ),
         |bounds| {
             let rect_typed = objc2_foundation::NSRect::new(
                 objc2_foundation::NSPoint::new(
@@ -2284,7 +2195,7 @@ extern "C" fn first_rect_for_character_range(
                     bounds.size.height.0 as f64,
                 ),
             );
-            unsafe { std::mem::transmute::<objc2_foundation::NSRect, cocoa::foundation::NSRect>(rect_typed) }
+            rect_typed
         },
     )
 }
@@ -2427,7 +2338,7 @@ extern "C" fn accepts_first_mouse(this: &Object, _: Sel, _: id) -> BOOL {
 extern "C" fn character_index_for_point(
     this: &Object,
     _: Sel,
-    position: cocoa::foundation::NSPoint,
+    position: objc2_foundation::NSPoint,
 ) -> u64 {
     let position = screen_point_to_gpui_point(this, position);
     with_input_handler(this, |input_handler| {
@@ -2440,7 +2351,7 @@ extern "C" fn character_index_for_point(
 
 fn screen_point_to_gpui_point(
     this: &Object,
-    position: cocoa::foundation::NSPoint,
+    position: objc2_foundation::NSPoint,
 ) -> Point<Pixels> {
     let frame = get_frame(this);
     let pos_typed: objc2_foundation::NSPoint = unsafe { std::mem::transmute(position) };
@@ -2604,7 +2515,7 @@ fn display_id_for_typed_screen(screen: &objc2_app_kit::NSScreen) -> CGDirectDisp
 extern "C" fn blurred_view_init_with_frame(
     this: &Object,
     _: Sel,
-    frame: cocoa::foundation::NSRect,
+    frame: objc2_foundation::NSRect,
 ) -> id {
     unsafe {
         let view: id = msg_send![super(this, class!(NSVisualEffectView)), initWithFrame: frame];
@@ -2629,7 +2540,7 @@ extern "C" fn blurred_view_update_layer(this: &Object, _: Sel) {
 
 unsafe fn remove_layer_background(layer: &CALayer) {
     unsafe {
-        let layer_objc: *mut objc::runtime::Object = layer as *const _ as *mut objc::runtime::Object;
+        let layer_objc: *mut objc2::runtime::AnyObject = layer as *const _ as *mut objc2::runtime::AnyObject;
         let _: () = msg_send![layer_objc, setBackgroundColor:nil];
 
         let class_name: id = msg_send![layer_objc, className];
@@ -2656,7 +2567,7 @@ unsafe fn remove_layer_background(layer: &CALayer) {
             for i in 0..count {
                 let obj = filters.objectAtIndex(i as objc2_foundation::NSUInteger);
                 let any: &objc2::runtime::AnyObject = &*obj;
-                let any_objc: *mut objc::runtime::Object = any as *const _ as *mut objc::runtime::Object;
+                let any_objc: *mut objc2::runtime::AnyObject = any as *const _ as *mut objc2::runtime::AnyObject;
                 let description: id = msg_send![any_objc, description];
                 let hit: BOOL = msg_send![description, containsString: &*test_string];
                 if hit == NO {
@@ -2764,3 +2675,9 @@ extern "C" fn toggle_tab_bar(this: &Object, _sel: Sel, _id: id) {
         }
     }
 }
+// Centralized shims around missing typed selectors to confine unsafe
+fn window_standard_button(win: &objc2_app_kit::NSWindow, button: objc2_app_kit::NSWindowButton) -> id {
+    unsafe { msg_send![win, standardWindowButton: button] }
+}
+
+ 

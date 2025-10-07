@@ -9,7 +9,7 @@ mod keyboard;
 #[cfg(feature = "screen-capture")]
 mod screen_capture;
 
-#[cfg(not(feature = "macos-blade"))]
+#[cfg(all(not(feature = "macos-blade"), not(feature = "macos-metal4")))]
 mod metal_atlas;
 #[cfg(all(not(feature = "macos-blade"), feature = "macos-metal4"))]
 pub mod metal4_renderer;
@@ -34,11 +34,16 @@ mod text_system;
 
 mod platform;
 mod window;
+#[cfg(feature = "macos-swift")]
+mod swift_window;
 mod window_appearance;
+mod shims;
+#[cfg(feature = "macos-swift")]
+mod swift_ffi;
 
 use crate::{DevicePixels, Pixels, Size, px, size};
 use objc2_foundation::{NSRect, NSSize, NSNotFound, NSUInteger};
-use objc::runtime::{BOOL, NO, YES};
+use objc2::runtime::Bool;
 use std::ops::Range;
 
 pub(crate) use dispatcher::*;
@@ -46,7 +51,12 @@ pub(crate) use display::*;
 pub(crate) use display_link::*;
 pub(crate) use keyboard::*;
 pub(crate) use platform::*;
+#[cfg(not(feature = "macos-swift"))]
 pub(crate) use window::*;
+#[cfg(feature = "macos-swift")]
+pub(crate) use swift_window::*;
+#[cfg(feature = "macos-swift")]
+pub(crate) use swift_ffi::*;
 
 #[cfg(feature = "font-kit")]
 pub(crate) use text_system::*;
@@ -55,36 +65,33 @@ pub(crate) use text_system::*;
 pub(crate) type PlatformScreenCaptureFrame = CVImageBuffer;
 
 trait BoolExt {
-    fn to_objc(self) -> BOOL;
+    fn to_objc(self) -> Bool;
 }
 
 impl BoolExt for bool {
-    fn to_objc(self) -> BOOL {
-        if self { YES } else { NO }
+    fn to_objc(self) -> Bool {
+        if self { Bool::YES } else { Bool::NO }
     }
 }
 
 // Deprecated NSString::UTF8String shim removed; use typed NSString + autoreleasepool
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-struct NSRange {
-    pub location: NSUInteger,
-    pub length: NSUInteger,
+// Use objc2_foundation's NSRange directly and extend its helpers
+pub(crate) type NSRange = objc2_foundation::NSRange;
+
+trait NSRangeExt {
+    fn invalid() -> Self;
+    fn is_valid(&self) -> bool;
+    fn to_range(self) -> Option<Range<usize>>;
 }
 
-impl NSRange {
+impl NSRangeExt for NSRange {
     fn invalid() -> Self {
-        Self {
-            location: NSNotFound as NSUInteger,
-            length: 0,
-        }
+        Self::new(NSNotFound as NSUInteger, 0)
     }
-
     fn is_valid(&self) -> bool {
         self.location != NSNotFound as NSUInteger
     }
-
     fn to_range(self) -> Option<Range<usize>> {
         if self.is_valid() {
             let start = self.location as usize;
@@ -93,26 +100,6 @@ impl NSRange {
         } else {
             None
         }
-    }
-}
-
-impl From<Range<usize>> for NSRange {
-    fn from(range: Range<usize>) -> Self {
-        NSRange {
-            location: range.start as NSUInteger,
-            length: range.len() as NSUInteger,
-        }
-    }
-}
-
-unsafe impl objc::Encode for NSRange {
-    fn encode() -> objc::Encoding {
-        let encoding = format!(
-            "{{NSRange={}{}}}",
-            NSUInteger::encode().as_str(),
-            NSUInteger::encode().as_str()
-        );
-        unsafe { objc::Encoding::from_str(&encoding) }
     }
 }
 

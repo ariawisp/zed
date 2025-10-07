@@ -48,6 +48,24 @@ pub unsafe fn new_renderer(
     MetalRenderer::new(context)
 }
 
+pub unsafe fn new_renderer_with_layer(
+    context: self::Context,
+    external_layer_ptr: *mut c_void,
+) -> Renderer {
+    let mut renderer = MetalRenderer::new(context);
+    // Adopt external CAMetalLayer provided by Swift
+    let layer_ref: &CAMetalLayer = &*(external_layer_ptr as *mut CAMetalLayer);
+    let retained = objc2::rc::Retained::retain(layer_ref as *const _ as *mut CAMetalLayer)
+        .expect("retain CAMetalLayer");
+    renderer.layer = retained;
+    // Keep device/pixel format/etc. consistent
+    renderer.layer.set_device(&renderer.device);
+    renderer.layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    renderer.layer.set_opaque(false);
+    renderer.layer.set_maximum_drawable_count(3);
+    renderer
+}
+
 pub(crate) struct InstanceBufferPool {
     buffer_size: usize,
     buffers: Vec<metal::Buffer>,
