@@ -16,14 +16,9 @@ use objc2_app_kit::{NSStatusBar, NSStatusItem};
 // Use raw Objective-C object pointers directly where needed
 use ctor::ctor;
 use foreign_types::ForeignTypeRef;
-use objc::{
-    class,
-    declare::ClassDecl,
-    msg_send,
-    rc::StrongPtr,
-    runtime::{Class, Object, Protocol, Sel},
-    sel, sel_impl,
-};
+use objc::{class, msg_send, rc::StrongPtr, sel, sel_impl};
+use objc2::runtime::{AnyClass as Objc2AnyClass, AnyObject as Objc2AnyObject, AnyProtocol as Objc2AnyProtocol, ClassBuilder as Objc2ClassBuilder};
+use std::ffi::CStr;
 use std::{
     cell::RefCell,
     ffi::c_void,
@@ -34,74 +29,40 @@ use std::{
 
 use super::screen::Screen;
 
-static mut VIEW_CLASS: *const Class = ptr::null();
 const STATE_IVAR: &str = "state";
 
 #[ctor]
 unsafe fn build_classes() {
-    VIEW_CLASS = {
-        let mut decl = ClassDecl::new("GPUIStatusItemView", class!(NSView)).unwrap();
-        decl.add_ivar::<*mut c_void>(STATE_IVAR);
-
-        decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
-
-        decl.add_method(
-            sel!(mouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(mouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(rightMouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(rightMouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(otherMouseDown:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(otherMouseUp:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(mouseMoved:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(mouseDragged:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(scrollWheel:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(flagsChanged:),
-            handle_view_event as extern "C" fn(&Object, Sel, *mut Object),
-        );
-        decl.add_method(
-            sel!(makeBackingLayer),
-            make_backing_layer as extern "C" fn(&Object, Sel) -> *mut Object,
-        );
+    let mut decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"GPUIStatusItemView\0").unwrap(),
+        objc2::class!(NSView),
+    )
+    .expect("failed to allocate GPUIStatusItemView class");
+    decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"state\0").unwrap());
+    unsafe {
+        // Register methods using generic extern signatures to satisfy objc2
+        decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(_, _));
+        decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(rightMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(rightMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(_, _, _));
+        decl.add_method(sel!(makeBackingLayer), make_backing_layer as extern "C" fn(_, _) -> _);
         decl.add_method(
             sel!(viewDidChangeEffectiveAppearance),
-            view_did_change_effective_appearance as extern "C" fn(&Object, Sel),
+            view_did_change_effective_appearance as extern "C" fn(_, _),
         );
-
-        decl.add_protocol(Protocol::get("CALayerDelegate").unwrap());
-        decl.add_method(
-            sel!(displayLayer:),
-            display_layer as extern "C" fn(&Object, Sel, *mut Object),
-        );
-
-        decl.register()
-    };
+        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"CALayerDelegate\0").unwrap()) {
+            decl.add_protocol(proto);
+        }
+        decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(_, _, _));
+    }
+    let _ = decl.register();
 }
 
 pub struct StatusItem(Rc<RefCell<StatusItemState>>);
@@ -127,7 +88,10 @@ impl StatusItem {
             let button = native_item.button();
             let _: () = msg_send![button, setHidden: true];
 
-            let native_view = msg_send![VIEW_CLASS, alloc];
+            let view_cls: &Objc2AnyClass = Objc2AnyClass::get(CStr::from_bytes_with_nul(b"GPUIStatusItemView\0").unwrap())
+                .expect("GPUIStatusItemView class not registered");
+            let native_view_any: *mut Objc2AnyObject = objc2::msg_send![view_cls, alloc];
+            let native_view = native_view_any as *mut Object;
             let state = Rc::new(RefCell::new(StatusItemState {
                 native_item,
                 native_view: StrongPtr::new(native_view),
@@ -140,10 +104,15 @@ impl StatusItem {
             let parent_view = button.superview().superview();
             let parent_frame: NSRect = msg_send![parent_view, frame];
             let _: *mut Object = msg_send![native_view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), parent_frame.size)];
-            (*native_view).set_ivar(
-                STATE_IVAR,
-                Weak::into_raw(Rc::downgrade(&state)) as *const c_void,
-            );
+            // Set ivar using objc2 helpers
+            {
+                let ivar_name = CStr::from_bytes_with_nul(b"state\0").unwrap();
+                let view_ref: &mut Objc2AnyObject = unsafe { &mut *(native_view_any) };
+                let ivar = view_ref.class().instance_variable(ivar_name).expect("state ivar missing");
+                unsafe {
+                    *ivar.load_mut::<*const c_void>(view_ref) = Weak::into_raw(Rc::downgrade(&state)) as *const c_void;
+                }
+            }
             let _: () = msg_send![native_view, setWantsBestResolutionOpenGLSurface: true];
             let _: () = msg_send![native_view, setWantsLayer: true];
             let _: () = msg_send![native_view, setLayerContentsRedrawPolicy: NSViewLayerContentsRedrawDuringViewResize];

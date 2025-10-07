@@ -12,7 +12,7 @@ use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType};
 use objc2::rc::autoreleasepool;
 use core_foundation::data::{CFDataGetBytePtr, CFDataRef};
 use core_graphics::event::CGKeyCode;
-use objc::{msg_send, sel, sel_impl};
+// Prefer objc2 messaging; only use objc macros elsewhere for dynamic classes
 use std::{borrow::Cow, ffi::c_void};
 
 const BACKSPACE_KEY: u16 = 0x7f;
@@ -526,9 +526,7 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
             as CFDataRef
     };
     if layout_data.is_null() {
-        unsafe {
-            let _: () = msg_send![keyboard, release];
-        }
+        unsafe { let _: () = objc2::msg_send![keyboard as *mut objc2::runtime::AnyObject, release]; }
         return "".to_string();
     }
     let keyboard_layout = unsafe { CFDataGetBytePtr(layout_data) };
@@ -560,7 +558,7 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
                 &mut buffer as *mut u16,
             );
         }
-        let _: () = msg_send![keyboard, release];
+        let _: () = objc2::msg_send![keyboard as *mut objc2::runtime::AnyObject, release];
     }
     String::from_utf16(&buffer[..buffer_size]).unwrap_or_default()
 }

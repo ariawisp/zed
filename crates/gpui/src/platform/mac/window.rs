@@ -26,13 +26,13 @@ use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSArray as ObjNSArray, NSURL as ObjNSURL, NSString as ObjNSString, NSPoint, NSRect, NSSize, NSUserDefaults as ObjNSUserDefaults, NSUInteger};
 use objc2_quartz_core::CALayer;
+/* objc2 dynamic class migration pending for window.rs */
 
 use core_graphics::display::{CGDirectDisplayID, CGPoint, CGRect};
 use ctor::ctor;
 use futures::channel::oneshot;
 use objc::{
     class,
-    declare::ClassDecl,
     msg_send,
     runtime::{BOOL, Class, NO, Object, Protocol, Sel, YES},
     sel, sel_impl,
@@ -100,22 +100,10 @@ unsafe fn build_classes() {
                     sel!(performKeyEquivalent:),
                     handle_key_equivalent as extern "C" fn(&Object, Sel, id) -> BOOL,
                 );
-                decl.add_method(
-                    sel!(keyDown:),
-                    handle_key_down as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(keyUp:),
-                    handle_key_up as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(mouseDown:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(mouseUp:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
+                decl.add_method(sel!(keyDown:), handle_key_down as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(keyUp:), handle_key_up as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(&Object, Sel, id));
                 decl.add_method(
                     sel!(rightMouseDown:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
@@ -124,38 +112,14 @@ unsafe fn build_classes() {
                     sel!(rightMouseUp:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
                 );
-                decl.add_method(
-                    sel!(otherMouseDown:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(otherMouseUp:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(mouseMoved:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(mouseExited:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(mouseDragged:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(scrollWheel:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(swipeWithEvent:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(flagsChanged:),
-                    handle_view_event as extern "C" fn(&Object, Sel, id),
-                );
+                decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(mouseExited:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(swipeWithEvent:), handle_view_event as extern "C" fn(&Object, Sel, id));
+                decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(&Object, Sel, id));
 
                 decl.add_method(
                     sel!(makeBackingLayer),
@@ -171,32 +135,19 @@ unsafe fn build_classes() {
                     sel!(setFrameSize:),
                     set_frame_size as extern "C" fn(&Object, Sel, cocoa::foundation::NSSize),
                 );
-                decl.add_method(
-                    sel!(displayLayer:),
-                    display_layer as extern "C" fn(&Object, Sel, id),
-                );
+                decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(&Object, Sel, id));
 
                 decl.add_protocol(Protocol::get("NSTextInputClient").unwrap());
                 decl.add_method(
                     sel!(validAttributesForMarkedText),
                     valid_attributes_for_marked_text as extern "C" fn(&Object, Sel) -> id,
                 );
-                decl.add_method(
-                    sel!(hasMarkedText),
-                    has_marked_text as extern "C" fn(&Object, Sel) -> BOOL,
-                );
-                decl.add_method(
-                    sel!(markedRange),
-                    marked_range as extern "C" fn(&Object, Sel) -> NSRange,
-                );
-                decl.add_method(
-                    sel!(selectedRange),
-                    selected_range as extern "C" fn(&Object, Sel) -> NSRange,
-                );
+                decl.add_method(sel!(hasMarkedText), has_marked_text as extern "C" fn(&Object, Sel) -> BOOL);
+                decl.add_method(sel!(markedRange), marked_range as extern "C" fn(&Object, Sel) -> NSRange);
+                decl.add_method(sel!(selectedRange), selected_range as extern "C" fn(&Object, Sel) -> NSRange);
                 decl.add_method(
                     sel!(firstRectForCharacterRange:actualRange:),
-                    first_rect_for_character_range
-                        as extern "C" fn(&Object, Sel, NSRange, id) -> cocoa::foundation::NSRect,
+                    first_rect_for_character_range as extern "C" fn(&Object, Sel, NSRange, id) -> cocoa::foundation::NSRect,
                 );
                 decl.add_method(
                     sel!(insertText:replacementRange:),
@@ -209,25 +160,21 @@ unsafe fn build_classes() {
                 decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(&Object, Sel));
                 decl.add_method(
                     sel!(attributedSubstringForProposedRange:actualRange:),
-                    attributed_substring_for_proposed_range
-                        as extern "C" fn(&Object, Sel, NSRange, *mut c_void) -> id,
+                    attributed_substring_for_proposed_range as extern "C" fn(&Object, Sel, NSRange, *mut c_void) -> id,
                 );
                 decl.add_method(
                     sel!(viewDidChangeEffectiveAppearance),
                     view_did_change_effective_appearance as extern "C" fn(&Object, Sel),
                 );
 
-                // Suppress beep on keystrokes with modifier keys.
                 decl.add_method(
                     sel!(doCommandBySelector:),
                     do_command_by_selector as extern "C" fn(&Object, Sel, Sel),
                 );
-
                 decl.add_method(
                     sel!(acceptsFirstMouse:),
                     accepts_first_mouse as extern "C" fn(&Object, Sel, id) -> BOOL,
                 );
-
                 decl.add_method(
                     sel!(characterIndexForPoint:),
                     character_index_for_point as extern "C" fn(&Object, Sel, cocoa::foundation::NSPoint) -> u64,
@@ -242,13 +189,141 @@ unsafe fn build_classes() {
                     sel!(initWithFrame:),
                     blurred_view_init_with_frame as extern "C" fn(&Object, Sel, cocoa::foundation::NSRect) -> id,
                 );
-                decl.add_method(
-                    sel!(updateLayer),
-                    blurred_view_update_layer as extern "C" fn(&Object, Sel),
-                );
+                decl.add_method(sel!(updateLayer), blurred_view_update_layer as extern "C" fn(&Object, Sel));
                 decl.register()
             }
         };
+        return;
+        /* Register GPUIWindow (objc2 version commented out)
+        let mut window_decl = Objc2ClassBuilder::new(
+            CStr::from_bytes_with_nul(b"GPUIWindow\0").unwrap(),
+            objc2::class!(NSWindow),
+        )
+        .expect("allocate GPUIWindow");
+        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
+            window_decl.add_protocol(proto);
+        }
+        window_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+        window_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
+        window_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
+        window_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
+        window_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
+        window_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
+        window_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
+        window_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
+        window_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
+        window_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
+        window_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
+        WINDOW_CLASS = window_decl.register();
+
+        // Register GPUIPanel
+        let mut panel_decl = Objc2ClassBuilder::new(
+            CStr::from_bytes_with_nul(b"GPUIPanel\0").unwrap(),
+            objc2::class!(NSPanel),
+        )
+        .expect("allocate GPUIPanel");
+        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSWindowDelegate\0").unwrap()) {
+            panel_decl.add_protocol(proto);
+        }
+        panel_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+        panel_decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, _));
+        panel_decl.add_method(sel!(canBecomeMainWindow), yes as extern "C" fn(_, _) -> _);
+        panel_decl.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
+        panel_decl.add_method(sel!(windowDidResize:), window_did_resize as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowDidChangeOcclusionState:), window_did_change_occlusion_state as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowWillEnterFullScreen:), window_will_enter_fullscreen as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowWillExitFullScreen:), window_will_exit_fullscreen as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowDidMove:), window_did_move as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowDidChangeScreen:), window_did_change_screen as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowDidBecomeKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowDidResignKey:), window_did_change_key_status as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(windowShouldClose:), window_should_close as extern "C" fn(_, _, _) -> _);
+        panel_decl.add_method(sel!(close), close_window as extern "C" fn(_, _));
+        panel_decl.add_method(sel!(draggingEntered:), dragging_entered as extern "C" fn(_, _, _) -> _);
+        panel_decl.add_method(sel!(draggingUpdated:), dragging_updated as extern "C" fn(_, _, _) -> _);
+        panel_decl.add_method(sel!(draggingExited:), dragging_exited as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(performDragOperation:), perform_drag_operation as extern "C" fn(_, _, _) -> _);
+        panel_decl.add_method(sel!(concludeDragOperation:), conclude_drag_operation as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(addTitlebarAccessoryViewController:), add_titlebar_accessory_view_controller as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(moveTabToNewWindow:), move_tab_to_new_window as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(mergeAllWindows:), merge_all_windows as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(selectNextTab:), select_next_tab as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(selectPreviousTab:), select_previous_tab as extern "C" fn(_, _, _));
+        panel_decl.add_method(sel!(toggleTabBar:), toggle_tab_bar as extern "C" fn(_, _, _));
+        PANEL_CLASS = panel_decl.register();
+
+        // Register GPUIView
+        let mut view_decl = Objc2ClassBuilder::new(
+            CStr::from_bytes_with_nul(b"GPUIView\0").unwrap(),
+            objc2::class!(NSView),
+        )
+        .expect("allocate GPUIView");
+        view_decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"windowState\0").unwrap());
+        view_decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(_, _));
+        view_decl.add_method(sel!(performKeyEquivalent:), handle_key_equivalent as extern "C" fn(_, _, _) -> _);
+        view_decl.add_method(sel!(keyDown:), handle_key_down as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(keyUp:), handle_key_up as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(mouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(mouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(rightMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(rightMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(otherMouseDown:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(otherMouseUp:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(mouseMoved:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(mouseExited:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(mouseDragged:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(scrollWheel:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(swipeWithEvent:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(flagsChanged:), handle_view_event as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(makeBackingLayer), make_backing_layer as extern "C" fn(_, _) -> _);
+        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"CALayerDelegate\0").unwrap()) {
+            view_decl.add_protocol(proto);
+        }
+        view_decl.add_method(sel!(viewDidChangeBackingProperties), view_did_change_backing_properties as extern "C" fn(_, _));
+        view_decl.add_method(sel!(setFrameSize:), set_frame_size as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(displayLayer:), display_layer as extern "C" fn(_, _, _));
+        if let Some(proto) = Objc2AnyProtocol::get(CStr::from_bytes_with_nul(b"NSTextInputClient\0").unwrap()) {
+            view_decl.add_protocol(proto);
+        }
+        view_decl.add_method(sel!(validAttributesForMarkedText), valid_attributes_for_marked_text as extern "C" fn(_, _) -> _);
+        view_decl.add_method(sel!(hasMarkedText), has_marked_text as extern "C" fn(_, _) -> _);
+        view_decl.add_method(sel!(markedRange), marked_range as extern "C" fn(_, _) -> _);
+        view_decl.add_method(sel!(selectedRange), selected_range as extern "C" fn(_, _) -> _);
+        view_decl.add_method(sel!(firstRectForCharacterRange:actualRange:), first_rect_for_character_range as extern "C" fn(_, _, _, _) -> _);
+        view_decl.add_method(sel!(insertText:replacementRange:), insert_text as extern "C" fn(_, _, _, _));
+        view_decl.add_method(sel!(setMarkedText:selectedRange:replacementRange:), set_marked_text as extern "C" fn(_, _, _, _, _));
+        view_decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(_, _));
+        view_decl.add_method(sel!(attributedSubstringForProposedRange:actualRange:), attributed_substring_for_proposed_range as extern "C" fn(_, _, _, _) -> _);
+        view_decl.add_method(sel!(viewDidChangeEffectiveAppearance), view_did_change_effective_appearance as extern "C" fn(_, _));
+        view_decl.add_method(sel!(doCommandBySelector:), do_command_by_selector as extern "C" fn(_, _, _));
+        view_decl.add_method(sel!(acceptsFirstMouse:), accepts_first_mouse as extern "C" fn(_, _, _) -> _);
+        view_decl.add_method(sel!(characterIndexForPoint:), character_index_for_point as extern "C" fn(_, _, _) -> _);
+        VIEW_CLASS = view_decl.register();
+
+        // Register BlurredView
+        let mut blur_decl = Objc2ClassBuilder::new(
+            CStr::from_bytes_with_nul(b"BlurredView\0").unwrap(),
+            objc2::class!(NSVisualEffectView),
+        )
+        .expect("allocate BlurredView");
+        blur_decl.add_method(sel!(initWithFrame:), blurred_view_init_with_frame as extern "C" fn(_, _, _) -> _);
+        blur_decl.add_method(sel!(updateLayer), blurred_view_update_layer as extern "C" fn(_, _));
+        BLURRED_VIEW_CLASS = blur_decl.register();
+        */
     }
 }
 
@@ -256,115 +331,7 @@ pub(crate) fn convert_mouse_position(position: objc2_foundation::NSPoint, window
     point(px(position.x as f32), window_height - px(position.y as f32))
 }
 
-unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const Class {
-    unsafe {
-        let mut decl = ClassDecl::new(name, superclass).unwrap();
-        // Explicitly conform to NSWindowDelegate so we can use typed setDelegate
-        decl.add_protocol(Protocol::get("NSWindowDelegate").unwrap());
-        decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
-        decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(&Object, Sel));
-
-        decl.add_method(
-            sel!(canBecomeMainWindow),
-            yes as extern "C" fn(&Object, Sel) -> BOOL,
-        );
-        decl.add_method(
-            sel!(canBecomeKeyWindow),
-            yes as extern "C" fn(&Object, Sel) -> BOOL,
-        );
-        decl.add_method(
-            sel!(windowDidResize:),
-            window_did_resize as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidChangeOcclusionState:),
-            window_did_change_occlusion_state as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowWillEnterFullScreen:),
-            window_will_enter_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowWillExitFullScreen:),
-            window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidMove:),
-            window_did_move as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidChangeScreen:),
-            window_did_change_screen as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidBecomeKey:),
-            window_did_change_key_status as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowDidResignKey:),
-            window_did_change_key_status as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(windowShouldClose:),
-            window_should_close as extern "C" fn(&Object, Sel, id) -> BOOL,
-        );
-
-        decl.add_method(sel!(close), close_window as extern "C" fn(&Object, Sel));
-
-        decl.add_method(
-            sel!(draggingEntered:),
-            dragging_entered as extern "C" fn(&Object, Sel, id) -> NSDragOperation,
-        );
-        decl.add_method(
-            sel!(draggingUpdated:),
-            dragging_updated as extern "C" fn(&Object, Sel, id) -> NSDragOperation,
-        );
-        decl.add_method(
-            sel!(draggingExited:),
-            dragging_exited as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(performDragOperation:),
-            perform_drag_operation as extern "C" fn(&Object, Sel, id) -> BOOL,
-        );
-        decl.add_method(
-            sel!(concludeDragOperation:),
-            conclude_drag_operation as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(addTitlebarAccessoryViewController:),
-            add_titlebar_accessory_view_controller as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(moveTabToNewWindow:),
-            move_tab_to_new_window as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(mergeAllWindows:),
-            merge_all_windows as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(selectNextTab:),
-            select_next_tab as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(selectPreviousTab:),
-            select_previous_tab as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.add_method(
-            sel!(toggleTabBar:),
-            toggle_tab_bar as extern "C" fn(&Object, Sel, id),
-        );
-
-        decl.register()
-    }
-}
+// build_window_class helper removed; class registration done in build_classes.
 
 struct MacWindowState {
     handle: AnyWindowHandle,
@@ -1510,6 +1477,7 @@ impl PlatformWindow for MacWindow {
                     (&*window as *const objc2_app_kit::NSWindow)
                         as *mut objc::runtime::Object
                 );
+            {
                 if msg_send![win_obj, isKindOfClass: WINDOW_CLASS] {
                     let handle = get_window_state(win_obj).lock().handle;
                     let title: id = msg_send![win_obj, title];
@@ -1520,6 +1488,7 @@ impl PlatformWindow for MacWindow {
                     };
                     result.push(SystemWindowTab::new(title, handle));
                 }
+            }
             }
 
             Some(result)

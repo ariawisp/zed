@@ -19,7 +19,6 @@ use cocoa::{
     foundation::NSInteger,
 };
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject as Objc2AnyObject;
 use objc2::AnyThread;
 use objc2_foundation::{ns_string, NSCopying};
 use objc2_app_kit::{
@@ -48,11 +47,11 @@ use futures::channel::oneshot;
 use itertools::Itertools;
 use objc::{
     class,
-    declare::ClassDecl,
     msg_send,
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
+use objc2::runtime::{AnyClass as Objc2AnyClass, AnyObject as Objc2AnyObject, ClassBuilder as Objc2ClassBuilder, Sel as Objc2Sel};
 use parking_lot::Mutex;
 use ptr::null_mut;
 use std::{
@@ -73,92 +72,83 @@ use util::ResultExt;
 // Removed: no longer needed after switching to typed NSString conversions
 
 const MAC_PLATFORM_IVAR: &str = "platform";
-static mut APP_CLASS: *const Class = ptr::null();
-static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
 
 #[ctor]
 unsafe fn build_classes() {
+    // Register GPUIApplicationDelegate using objc2
+    let mut decl = Objc2ClassBuilder::new(
+        CStr::from_bytes_with_nul(b"GPUIApplicationDelegate\0").unwrap(),
+        objc2::class!(NSResponder),
+    )
+    .expect("failed to allocate GPUIApplicationDelegate class");
+    decl.add_ivar::<*mut c_void>(CStr::from_bytes_with_nul(b"platform\0").unwrap());
     unsafe {
-        APP_CLASS = {
-            let mut decl = ClassDecl::new("GPUIApplication", class!(NSApplication)).unwrap();
-            decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
-            decl.register()
-        }
-    };
-    unsafe {
-        APP_DELEGATE_CLASS = unsafe {
-            let mut decl = ClassDecl::new("GPUIApplicationDelegate", class!(NSResponder)).unwrap();
-            decl.add_ivar::<*mut c_void>(MAC_PLATFORM_IVAR);
-            decl.add_method(
-                sel!(applicationWillFinishLaunching:),
-                will_finish_launching as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(applicationDidFinishLaunching:),
-                did_finish_launching as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-                should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
-            );
-            decl.add_method(
-                sel!(applicationWillTerminate:),
-                will_terminate as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(handleGPUIMenuItem:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            // Add menu item handlers so that OS save panels have the correct key commands
-            decl.add_method(
-                sel!(cut:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(copy:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(paste:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(selectAll:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(undo:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(redo:),
-                handle_menu_item as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(validateMenuItem:),
-                validate_menu_item as extern "C" fn(&mut Object, Sel, id) -> bool,
-            );
-            decl.add_method(
-                sel!(menuWillOpen:),
-                menu_will_open as extern "C" fn(&mut Object, Sel, id),
-            );
-            decl.add_method(
-                sel!(applicationDockMenu:),
-                handle_dock_menu as extern "C" fn(&mut Object, Sel, id) -> id,
-            );
-            decl.add_method(
-                sel!(application:openURLs:),
-                open_urls as extern "C" fn(&mut Object, Sel, id, id),
-            );
-
-            decl.add_method(
-                sel!(onKeyboardLayoutChange:),
-                on_keyboard_layout_change as extern "C" fn(&mut Object, Sel, id),
-            );
-
-            decl.register()
-        }
+        decl.add_method(
+            objc2::sel!(applicationWillFinishLaunching:),
+            will_finish_launching as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(applicationDidFinishLaunching:),
+            did_finish_launching as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+            should_handle_reopen as extern "C" fn(_, _, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(applicationWillTerminate:),
+            will_terminate as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(handleGPUIMenuItem:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(cut:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(copy:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(paste:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(selectAll:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(undo:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(redo:),
+            handle_menu_item as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(validateMenuItem:),
+            validate_menu_item as extern "C" fn(_, _, _) -> _,
+        );
+        decl.add_method(
+            objc2::sel!(menuWillOpen:),
+            menu_will_open as extern "C" fn(_, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(applicationDockMenu:),
+            handle_dock_menu as extern "C" fn(_, _, _) -> _,
+        );
+        decl.add_method(
+            objc2::sel!(application:openURLs:),
+            open_urls as extern "C" fn(_, _, _, _),
+        );
+        decl.add_method(
+            objc2::sel!(onKeyboardLayoutChange:),
+            on_keyboard_layout_change as extern "C" fn(_, _, _),
+        );
     }
+    let _ = decl.register();
 }
 
 pub(crate) struct MacPlatform(Mutex<MacPlatformState>);
@@ -259,14 +249,14 @@ impl MacPlatform {
     unsafe fn create_menu_bar_typed(
         &self,
         menus: &Vec<Menu>,
-        delegate: id,
+        delegate: *mut Objc2AnyObject,
         actions: &mut Vec<Box<dyn Action>>,
         keymap: &Keymap,
     ) -> Retained<Objc2NSMenu> {
         let mtm = MainThreadMarker::new().expect("building menus must be on main thread");
 
         // Use the app delegate object as the NSMenuDelegate target
-        let delegate_any: &Objc2AnyObject = unsafe { &*(delegate as *mut Objc2AnyObject) };
+        let delegate_any: &Objc2AnyObject = unsafe { &*delegate };
 
         let application_menu = Objc2NSMenu::initWithTitle(Objc2NSMenu::alloc(mtm), ns_string!(""));
         unsafe { let _: () = objc2::msg_send![&*application_menu, setDelegate: delegate_any]; }
@@ -500,20 +490,35 @@ impl Platform for MacPlatform {
         }
 
         unsafe {
-            let app: id = msg_send![APP_CLASS, sharedApplication];
-            let app_delegate: id = msg_send![APP_DELEGATE_CLASS, new];
-            app.setDelegate_(app_delegate);
+            let mtm = objc2::MainThreadMarker::new().expect("must run on main thread");
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
 
+            // Allocate delegate from registered class
+            let delegate_cls: &Objc2AnyClass = Objc2AnyClass::get(CStr::from_bytes_with_nul(b"GPUIApplicationDelegate\0").unwrap())
+                .expect("delegate class not registered");
+            let app_delegate: *mut Objc2AnyObject = objc2::msg_send![delegate_cls, new];
+            // Set delegate using untyped messaging
+            let delegate_any: &Objc2AnyObject = unsafe { &*app_delegate };
+            let _: () = objc2::msg_send![&*app, setDelegate: delegate_any];
+
+            // Store platform pointer in delegate ivar
             let self_ptr = self as *const Self as *const c_void;
-            (*app).set_ivar(MAC_PLATFORM_IVAR, self_ptr);
-            (*app_delegate).set_ivar(MAC_PLATFORM_IVAR, self_ptr);
+            let ivar_name = CStr::from_bytes_with_nul(b"platform\0").unwrap();
+            let ivar = delegate_any.class().instance_variable(ivar_name).expect("platform ivar not found");
+            let delegate_ref: &mut Objc2AnyObject = &mut *app_delegate;
+            unsafe { *ivar.load_mut::<*const c_void>(delegate_ref) = self_ptr; }
 
             objc2::rc::autoreleasepool(|_| {
                 app.run();
             });
 
-            (*app).set_ivar(MAC_PLATFORM_IVAR, null_mut::<c_void>());
-            (*NSWindow::delegate(app)).set_ivar(MAC_PLATFORM_IVAR, null_mut::<c_void>());
+            // Clear the ivar on the delegate if present
+            let current_delegate: *mut Objc2AnyObject = objc2::msg_send![&*app, delegate];
+            if !current_delegate.is_null() {
+                let ivar_name = CStr::from_bytes_with_nul(b"platform\0").unwrap();
+                let ivar = (&*current_delegate).class().instance_variable(ivar_name).expect("platform ivar not found");
+                unsafe { *ivar.load_mut::<*const c_void>(&mut *current_delegate) = ptr::null() };
+            }
         }
     }
 
@@ -943,13 +948,14 @@ impl Platform for MacPlatform {
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {
         let mtm = MainThreadMarker::new().expect("menus must be set on main thread");
         // Get app delegate id via Cocoa to reuse as NSMenuDelegate
-        let app_id: id = unsafe { msg_send![APP_CLASS, sharedApplication] };
-        let delegate_id: id = unsafe { msg_send![app_id, delegate] };
+        let delegate_id: *mut Objc2AnyObject = unsafe {
+            let mtm = MainThreadMarker::new().expect("menus must be set on main thread");
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            objc2::msg_send![&*app, delegate]
+        };
         let mut state = self.0.lock();
         let actions = &mut state.menu_actions;
-        let application_menu = unsafe {
-            self.create_menu_bar_typed(&menus, delegate_id, actions, keymap)
-        };
+        let application_menu = unsafe { self.create_menu_bar_typed(&menus, delegate_id, actions, keymap) };
         drop(state);
 
         let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -1398,15 +1404,15 @@ unsafe fn path_from_objc(path: id) -> PathBuf {
     PathBuf::from(s)
 }
 
-unsafe fn get_mac_platform(object: &mut Object) -> &MacPlatform {
-    unsafe {
-        let platform_ptr: *mut c_void = *object.get_ivar(MAC_PLATFORM_IVAR);
-        assert!(!platform_ptr.is_null());
-        &*(platform_ptr as *const MacPlatform)
-    }
+unsafe fn get_mac_platform(object: &mut Objc2AnyObject) -> &MacPlatform {
+    let ivar_name = CStr::from_bytes_with_nul(b"platform\0").unwrap();
+    let ivar = object.class().instance_variable(ivar_name).expect("platform ivar not found");
+    let platform_ptr: *mut c_void = unsafe { *ivar.load_mut::<*mut c_void>(object) };
+    assert!(!platform_ptr.is_null());
+    unsafe { &*(platform_ptr as *const MacPlatform) }
 }
 
-extern "C" fn will_finish_launching(_this: &mut Object, _: Sel, _: id) {
+extern "C" fn will_finish_launching(_this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) {
     // Prefer typed NSUserDefaults; use msg_send for specific selector calls
     let defaults = objc2_foundation::NSUserDefaults::standardUserDefaults();
     let key = objc2_foundation::NSString::from_str("NSAutoFillHeuristicControllerEnabled");
@@ -1417,7 +1423,7 @@ extern "C" fn will_finish_launching(_this: &mut Object, _: Sel, _: id) {
     }
 }
 
-extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
+extern "C" fn did_finish_launching(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) {
     unsafe {
         // Set activation policy using objc2-app-kit
         let mtm = MainThreadMarker::new().expect("activation policy must be set on main thread");
@@ -1425,13 +1431,17 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
         use objc2_app_kit::NSApplicationActivationPolicy;
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
-        let notification_center: *mut Object =
-            msg_send![class!(NSNotificationCenter), defaultCenter];
+        let notification_center: *mut Objc2AnyObject =
+            objc2::msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
         let name = objc2_foundation::NSString::from_str("NSTextInputContextKeyboardSelectionDidChangeNotification");
-        let _: () = msg_send![notification_center, addObserver: this as id
-            selector: sel!(onKeyboardLayoutChange:)
-            name: &*name
-            object: nil
+        let none: Option<&Objc2AnyObject> = None;
+        let this_ref: &Objc2AnyObject = this;
+        let _: () = objc2::msg_send![
+            notification_center,
+            addObserver: this_ref,
+            selector: objc2::sel!(onKeyboardLayoutChange:),
+            name: &*name,
+            object: none
         ];
 
         let platform = get_mac_platform(this);
@@ -1442,8 +1452,8 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
     }
 }
 
-extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_windows: bool) {
-    if !has_open_windows {
+extern "C" fn should_handle_reopen(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject, has_open_windows: objc2::runtime::Bool) {
+    if !has_open_windows.as_bool() {
         let platform = unsafe { get_mac_platform(this) };
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.reopen.take() {
@@ -1454,7 +1464,7 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
     }
 }
 
-extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
+extern "C" fn will_terminate(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) {
     let platform = unsafe { get_mac_platform(this) };
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.quit.take() {
@@ -1464,7 +1474,7 @@ extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
     }
 }
 
-extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
+extern "C" fn on_keyboard_layout_change(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) {
     let platform = unsafe { get_mac_platform(this) };
     let mut lock = platform.0.lock();
     let keyboard_layout = MacKeyboardLayout::new();
@@ -1480,7 +1490,7 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
     }
 }
 
-extern "C" fn open_urls(this: &mut Object, _: Sel, _: id, urls: id) {
+extern "C" fn open_urls(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject, urls: *mut Objc2AnyObject) {
     let urls = unsafe {
         let arr: &objc2_foundation::NSArray<objc2_foundation::NSURL> =
             &*(urls as *mut objc2_foundation::NSArray<objc2_foundation::NSURL>);
@@ -1505,12 +1515,13 @@ extern "C" fn open_urls(this: &mut Object, _: Sel, _: id, urls: id) {
     }
 }
 
-extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
+extern "C" fn handle_menu_item(this: &mut Objc2AnyObject, _: Objc2Sel, item: *mut Objc2AnyObject) {
     unsafe {
         let platform = get_mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.menu_command.take() {
-            let tag: NSInteger = msg_send![item, tag];
+            let item_obj: &objc::runtime::Object = unsafe { &*(item as *mut objc::runtime::Object) };
+            let tag: NSInteger = msg_send![item_obj, tag];
             let index = tag as usize;
             if let Some(action) = lock.menu_actions.get(index) {
                 let action = action.boxed_clone();
@@ -1522,13 +1533,14 @@ extern "C" fn handle_menu_item(this: &mut Object, _: Sel, item: id) {
     }
 }
 
-extern "C" fn validate_menu_item(this: &mut Object, _: Sel, item: id) -> bool {
+extern "C" fn validate_menu_item(this: &mut Objc2AnyObject, _: Objc2Sel, item: *mut Objc2AnyObject) -> objc2::runtime::Bool {
     unsafe {
         let mut result = false;
         let platform = get_mac_platform(this);
         let mut lock = platform.0.lock();
         if let Some(mut callback) = lock.validate_menu_command.take() {
-            let tag: NSInteger = msg_send![item, tag];
+            let item_obj: &objc::runtime::Object = unsafe { &*(item as *mut objc::runtime::Object) };
+            let tag: NSInteger = msg_send![item_obj, tag];
             let index = tag as usize;
             if let Some(action) = lock.menu_actions.get(index) {
                 let action = action.boxed_clone();
@@ -1541,11 +1553,11 @@ extern "C" fn validate_menu_item(this: &mut Object, _: Sel, item: id) -> bool {
                 .validate_menu_command
                 .get_or_insert(callback);
         }
-        result
+        objc2::runtime::Bool::new(result)
     }
 }
 
-extern "C" fn menu_will_open(this: &mut Object, _: Sel, _: id) {
+extern "C" fn menu_will_open(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) {
     unsafe {
         let platform = get_mac_platform(this);
         let mut lock = platform.0.lock();
@@ -1557,15 +1569,15 @@ extern "C" fn menu_will_open(this: &mut Object, _: Sel, _: id) {
     }
 }
 
-extern "C" fn handle_dock_menu(this: &mut Object, _: Sel, _: id) -> id {
+extern "C" fn handle_dock_menu(this: &mut Objc2AnyObject, _: Objc2Sel, _: *mut Objc2AnyObject) -> *mut Objc2AnyObject {
     unsafe {
         let platform = get_mac_platform(this);
         let mut state = platform.0.lock();
         if let Some(ref menu) = state.dock_menu {
             // Return the raw Objective-C pointer; ownership stays with our Retained
-            Retained::as_ptr(menu) as *mut Object
+            Retained::as_ptr(menu) as *mut Objc2AnyObject
         } else {
-            nil
+            std::ptr::null_mut()
         }
     }
 }
