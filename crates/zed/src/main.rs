@@ -1,5 +1,8 @@
 mod reliability;
 mod zed;
+mod redwood_host_bridge; // STOPGAP: static host registration for Redwood->GPUI
+mod redwood_preview; // STOPGAP: minimal view to render commands from host
+mod zed_wasm_host; // C ABI for Zed-hosted Wasmtime (envelope bridge)
 
 use agent_ui::AgentPanel;
 use anyhow::{Context as _, Error, Result};
@@ -58,6 +61,7 @@ use zed::{
 };
 
 use crate::zed::OpenRequestKind;
+mod zedline_manifest;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -269,8 +273,17 @@ pub fn main() {
             .unwrap_or("unknown"),
     );
 
+    // Dev: If ZEDLINE_MANIFEST_PATH is set, parse the manifest and log it.
+    zedline_manifest::try_load_from_env();
+
     #[cfg(windows)]
     check_for_conpty_dll();
+
+    // STOPGAP: Register Redwood GPUI host vtable if linked. Build.rs only links the
+    // static lib when REDWOOD_HOST_LIB_DIR is set; otherwise this is a no-op.
+    redwood_host_bridge::try_register();
+    // STOPGAP: Allow a quick demo via env var until the real Redwood protocol decoder lands.
+    redwood_host_bridge::preview_demo_if_env();
 
     let app = Application::new().with_assets(Assets);
 
@@ -385,6 +398,18 @@ pub fn main() {
             .detach();
         }
     });
+
+    // STOPGAP: If REDWOOD_PREVIEW_WINDOW=1 or ZEDLINE_MANIFEST_PATH is set, open a preview window hosting RedwoodPreview.
+    if std::env::var("REDWOOD_PREVIEW_WINDOW").ok().as_deref() == Some("1")
+        || std::env::var("ZEDLINE_MANIFEST_PATH").ok().is_some()
+    {
+        app.run(move |mut cx| {
+            let _ = cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                cx.new(|cx| redwood_preview::RedwoodPreview::new(window, cx))
+            });
+        });
+        return;
+    }
 
     app.run(move |cx| {
         menu::init();

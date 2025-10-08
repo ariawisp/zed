@@ -167,6 +167,8 @@ zeta.workspace = true
 zeta2.workspace = true
 zlog.workspace = true
 zlog_settings.workspace = true
+wasmtime.workspace = true
+once_cell.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true
