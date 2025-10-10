@@ -1,7 +1,9 @@
-/// UI host functions for rendering Redwood/GPUI from extensions.
-use redwood:protocol.{redwood-frame}
+package zed:extension;
 
+/// UI host functions for rendering Redwood/GPUI from extensions.
 interface ui {
+    use redwood:protocol/protocol.{redwood-frame};
+
     /// Create (or ensure) a UI panel with the given id and title.
     create-panel: func(panel-id: u64, title: string);
 

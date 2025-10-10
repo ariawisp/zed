@@ -187,7 +187,6 @@ members = [
     "crates/ui_prompt",
     "crates/util",
     "crates/util_macros",
-    "crates/redwood_gpui_bridge",
     "crates/vercel",
     "crates/vim",
     "crates/vim_mode_setting",

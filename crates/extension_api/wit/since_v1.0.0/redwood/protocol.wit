@@ -1,29 +1,84 @@
-package redwood:protocol
+package redwood:protocol;
 
-/// Logical node identifier.
-type node-id = u64
+interface protocol {
+  /// Logical node identifier.
+  type node-id = u64;
 
-/// Index into a frame's string table.
-type string-id = u32
+  /// Index into a frame's string table.
+  type string-id = u32;
 
-/// Minimal widget kinds supported by the preview bridge.
-enum redwood-widget { text, button, image, row, column }
+  /// Minimal widget kinds supported by the preview bridge.
+  enum redwood-widget {
+    text,
+    button,
+    image,
+    row,
+    column,
+  }
 
-/// A single UI mutation.
-variant redwood-change {
-  create(record { id: node-id, widget: redwood-widget }),
-  destroy(record { id: node-id }),
-  append-child(record { parent: node-id, child: node-id }),
-  insert-child(record { parent: node-id, index: u32, child: node-id }),
-  remove-child(record { parent: node-id, child: node-id }),
-  set-text(record { id: node-id, text: string-id }),
-  set-enabled(record { id: node-id, enabled: bool }),
-  set-image-url(record { id: node-id, url: string-id }),
+  /// Payload for create widget operations.
+  record change-create {
+    id: node-id,
+    widget: redwood-widget,
+  }
+
+  /// Payload for destroy widget operations.
+  record change-destroy {
+    id: node-id,
+  }
+
+  /// Payload for append-child widget operations.
+  record change-append-child {
+    parent: node-id,
+    child: node-id,
+  }
+
+  /// Payload for insert-child widget operations.
+  record change-insert-child {
+    parent: node-id,
+    index: u32,
+    child: node-id,
+  }
+
+  /// Payload for remove-child widget operations.
+  record change-remove-child {
+    parent: node-id,
+    child: node-id,
+  }
+
+  /// Payload for text property updates.
+  record change-set-text {
+    id: node-id,
+    text: string-id,
+  }
+
+  /// Payload for enabled property updates.
+  record change-set-enabled {
+    id: node-id,
+    enabled: bool,
+  }
+
+  /// Payload for image-url property updates.
+  record change-set-image-url {
+    id: node-id,
+    url: string-id,
+  }
+
+  /// A single UI mutation.
+  variant redwood-change {
+    create(change-create),
+    destroy(change-destroy),
+    append-child(change-append-child),
+    insert-child(change-insert-child),
+    remove-child(change-remove-child),
+    set-text(change-set-text),
+    set-enabled(change-set-enabled),
+    set-image-url(change-set-image-url),
+  }
+
+  /// A batch of UI mutations plus an interned string table.
+  record redwood-frame {
+    strings: list<string>,
+    changes: list<redwood-change>,
+  }
 }
-
-/// A batch of UI mutations plus an interned string table.
-record redwood-frame {
-  strings: list<string>,
-  changes: list<redwood-change>,
-}
-

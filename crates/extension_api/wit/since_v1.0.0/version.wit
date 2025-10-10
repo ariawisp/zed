@@ -1,10 +1,9 @@
-package zed:extension
+package zed:extension;
 
 interface version {
     record version { major: u16, minor: u16, patch: u16 }
     record version-range { min: version, max: version }
 
     /// Returns the supported Wasm API version range for the host.
-    get-supported-range: func() -> version-range
+    get-supported-range: func() -> version-range;
 }
-

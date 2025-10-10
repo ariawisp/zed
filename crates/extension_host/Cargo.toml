@@ -52,7 +52,7 @@ wasmparser.workspace = true
 wasmtime-wasi.workspace = true
 wasmtime.workspace = true
 workspace-hack.workspace = true
-redwood_gpui_bridge = { path = "../redwood_gpui_bridge" }
+redwood_gpui_bridge = { path = "../../redwood/crates/redwood_gpui_bridge" }
 wasmtime_runtime = { path = "../../../zipline/wasmtime-host/crates/wasmtime-runtime" }
 
 [dev-dependencies]
