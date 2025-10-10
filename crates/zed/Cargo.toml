@@ -169,6 +169,7 @@ zlog.workspace = true
 zlog_settings.workspace = true
 wasmtime.workspace = true
 once_cell.workspace = true
+redwood_gpui_bridge = { path = "../redwood_gpui_bridge" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows.workspace = true

@@ -1,0 +1,29 @@
+package redwood:protocol
+
+/// Logical node identifier.
+type node-id = u64
+
+/// Index into a frame's string table.
+type string-id = u32
+
+/// Minimal widget kinds supported by the preview bridge.
+enum redwood-widget { text, button, image, row, column }
+
+/// A single UI mutation.
+variant redwood-change {
+  create(record { id: node-id, widget: redwood-widget }),
+  destroy(record { id: node-id }),
+  append-child(record { parent: node-id, child: node-id }),
+  insert-child(record { parent: node-id, index: u32, child: node-id }),
+  remove-child(record { parent: node-id, child: node-id }),
+  set-text(record { id: node-id, text: string-id }),
+  set-enabled(record { id: node-id, enabled: bool }),
+  set-image-url(record { id: node-id, url: string-id }),
+}
+
+/// A batch of UI mutations plus an interned string table.
+record redwood-frame {
+  strings: list<string>,
+  changes: list<redwood-change>,
+}
+

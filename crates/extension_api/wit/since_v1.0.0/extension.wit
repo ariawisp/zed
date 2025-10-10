@@ -1,0 +1,93 @@
+package zed:extension;
+
+world extension {
+    import context-server;
+    import version;
+    import dap;
+    import github;
+    import http-client;
+    import platform;
+    import process;
+    import nodejs;
+    import ui;
+
+    use common.{env-vars, range};
+    use context-server.{context-server-configuration};
+    use dap.{attach-request, build-task-template, debug-config, debug-adapter-binary, debug-task-definition, debug-request, debug-scenario, launch-request, resolved-task, start-debugging-request-arguments-request};
+    use lsp.{completion, symbol};
+    use process.{command};
+    use slash-command.{slash-command, slash-command-argument-completion, slash-command-output};
+
+    /// Initializes the extension.
+    export init-extension: func();
+
+    /// The type of a downloaded file.
+    enum downloaded-file-type {
+        /// A gzipped file (`.gz`).
+        gzip,
+        /// A gzipped tar archive (`.tar.gz`).
+        gzip-tar,
+        /// A ZIP file (`.zip`).
+        zip,
+        /// An uncompressed file.
+        uncompressed,
+    }
+
+    /// The installation status for a language server.
+    variant language-server-installation-status {
+        /// The language server has no installation status.
+        none,
+        /// The language server is being downloaded.
+        downloading,
+        /// The language server is checking for updates.
+        checking-for-update,
+        /// The language server installation failed for specified reason.
+        failed(string),
+    }
+
+    record settings-location { worktree-id: u64, path: string }
+
+    import get-settings: func(path: option<settings-location>, category: string, key: option<string>) -> result<string, string>;
+    import download-file: func(url: string, file-path: string, file-type: downloaded-file-type) -> result<_, string>;
+    import make-file-executable: func(filepath: string) -> result<_, string>;
+    import set-language-server-installation-status: func(language-server-name: string, status: language-server-installation-status);
+
+    resource worktree {
+        id: func() -> u64;
+        root-path: func() -> string;
+        read-text-file: func(path: string) -> result<string, string>;
+        which: func(binary-name: string) -> option<string>;
+        shell-env: func() -> env-vars;
+    }
+
+    resource project { worktree-ids: func() -> list<u64> }
+    resource key-value-store { insert: func(key: string, value: string) -> result<_, string> }
+
+    export language-server-command: func(language-server-id: string, worktree: borrow<worktree>) -> result<command, string>;
+    export language-server-initialization-options: func(language-server-id: string, worktree: borrow<worktree>) -> result<option<string>, string>;
+    export language-server-workspace-configuration: func(language-server-id: string, worktree: borrow<worktree>) -> result<option<string>, string>;
+    export language-server-additional-initialization-options: func(language-server-id: string, target-language-server-id: string, worktree: borrow<worktree>) -> result<option<string>, string>;
+    export language-server-additional-workspace-configuration: func(language-server-id: string, target-language-server-id: string, worktree: borrow<worktree>) -> result<option<string>, string>;
+
+    record code-label { code: string, spans: list<code-label-span>, filter-range: range }
+    variant code-label-span { code-range(range), literal(code-label-span-literal) }
+    record code-label-span-literal { text: string, highlight-name: option<string> }
+
+    export labels-for-completions: func(language-server-id: string, completions: list<completion>) -> result<list<option<code-label>>, string>;
+    export labels-for-symbols: func(language-server-id: string, symbols: list<symbol>) -> result<list<option<code-label>>, string>;
+
+    export complete-slash-command-argument: func(command: slash-command, args: list<string>) -> result<list<slash-command-argument-completion>, string>;
+    export run-slash-command: func(command: slash-command, args: list<string>, worktree: option<borrow<worktree>>) -> result<slash-command-output, string>;
+
+    export context-server-command: func(context-server-id: string, project: borrow<project>) -> result<command, string>;
+    export context-server-configuration: func(context-server-id: string, project: borrow<project>) -> result<option<context-server-configuration>, string>;
+
+    export suggest-docs-packages: func(provider-name: string) -> result<list<string>, string>;
+    export index-docs: func(provider-name: string, package-name: string, database: borrow<key-value-store>) -> result<_, string>;
+
+    export get-dap-binary: func(adapter-name: string, config: debug-task-definition, user-installed-path: option<string>, worktree: borrow<worktree>) -> result<debug-adapter-binary, string>;
+    export dap-request-kind: func(adapter-name: string, config: string) -> result<start-debugging-request-arguments-request, string>;
+    export dap-config-to-scenario: func(config: debug-config) -> result<debug-scenario, string>;
+    export dap-locator-create-scenario: func(locator-name: string, build-config-template: build-task-template, resolved-label: string, debug-adapter-name: string) -> option<debug-scenario>;
+    export run-dap-locator: func(locator-name: string, config: resolved-task) -> result<debug-request, string>;
+}

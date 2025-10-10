@@ -44,4 +44,6 @@ pub enum ExtensionCapabilityContent {
     NpmInstallPackage {
         package: String,
     },
+    #[serde(rename = "ui:redwood")]
+    RedwoodUi {},
 }

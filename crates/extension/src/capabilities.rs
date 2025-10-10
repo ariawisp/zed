@@ -17,4 +17,6 @@ pub enum ExtensionCapability {
     DownloadFile(DownloadFileCapability),
     #[serde(rename = "npm:install")]
     NpmInstallPackage(NpmInstallPackageCapability),
+    #[serde(rename = "ui:redwood")]
+    RedwoodUi,
 }

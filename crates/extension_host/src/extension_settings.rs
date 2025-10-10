@@ -8,18 +8,13 @@ use std::sync::Arc;
 #[derive(Debug, Default, Clone)]
 pub struct ExtensionSettings {
     /// The extensions that should be automatically installed by Zed.
-    ///
-    /// This is used to make functionality provided by extensions (e.g., language support)
-    /// available out-of-the-box.
-    ///
-    /// Default: { "html": true }
+    /// This is used to make functionality provided by extensions available out-of-the-box.
     pub auto_install_extensions: HashMap<Arc<str>, bool>,
     pub auto_update_extensions: HashMap<Arc<str>, bool>,
     pub granted_capabilities: Vec<ExtensionCapability>,
 }
 
 impl ExtensionSettings {
-    /// Returns whether the given extension should be auto-installed.
     pub fn should_auto_install(&self, extension_id: &str) -> bool {
         self.auto_install_extensions
             .get(extension_id)
@@ -58,8 +53,12 @@ impl Settings for ExtensionSettings {
                             package,
                         })
                     }
+                    settings::ExtensionCapabilityContent::RedwoodUi {} => {
+                        ExtensionCapability::RedwoodUi
+                    }
                 })
                 .collect(),
         }
     }
 }
+
