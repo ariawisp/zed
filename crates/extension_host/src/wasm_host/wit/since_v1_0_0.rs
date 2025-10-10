@@ -1,3 +1,4 @@
+use crate::ui::redwood_panel;
 use crate::wasm_host::wit::since_v1_0_0::{
     dap::{
         AttachRequest, BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, LaunchRequest,
@@ -6,22 +7,21 @@ use crate::wasm_host::wit::since_v1_0_0::{
     slash_command::SlashCommandOutputSection,
 };
 use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
-use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
+use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
-use anyhow::{Context as _, Result, bail, anyhow};
+use anyhow::{anyhow, bail, Context as _, Result};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use extension::{
     ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
 };
-use futures::{AsyncReadExt, lock::Mutex};
-use futures::{FutureExt as _, io::BufReader};
+use futures::{io::BufReader, FutureExt as _};
+use futures::{lock::Mutex, AsyncReadExt};
 use gpui::{BackgroundExecutor, SharedString};
-use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
+use language::{language_settings::AllLanguageSettings, BinaryStatus, LanguageName};
 use project::project_settings::ProjectSettings;
-use redwood_gpui_bridge as rbridge;
 use semantic_version::SemanticVersion;
 use std::{
     env,
@@ -43,7 +43,7 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(1, 0, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../extension_api/wit/since_v1.0.0",
+    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v1.0.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
@@ -244,12 +244,13 @@ impl From<extension::BuildTaskDefinition> for BuildTaskDefinition {
     fn from(value: extension::BuildTaskDefinition) -> Self {
         match value {
             extension::BuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
-            extension::BuildTaskDefinition::Template { task_template, locator_name } => {
-                Self::Template(BuildTaskDefinitionTemplatePayload {
-                    template: task_template.into(),
-                    locator_name: locator_name.map(String::from),
-                })
-            }
+            extension::BuildTaskDefinition::Template {
+                task_template,
+                locator_name,
+            } => Self::Template(BuildTaskDefinitionTemplatePayload {
+                template: task_template.into(),
+                locator_name: locator_name.map(String::from),
+            }),
         }
     }
 }
@@ -267,20 +268,7 @@ impl ui::Host for WasmState {
     }
 
     async fn apply(&mut self, panel_id: u64, frame: ui::RedwoodFrame) -> wasmtime::Result<()> {
-        let strings = frame.strings;
-        let changes = frame.changes.into_iter().map(|ch| match ch {
-            ui::RedwoodChange::Create(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::Create, create: Some(rbridge::RedwoodChangeCreate { id: r.id, widget: match r.widget { ui::RedwoodWidget::Text => rbridge::RedwoodWidget::Text, ui::RedwoodWidget::Button => rbridge::RedwoodWidget::Button, ui::RedwoodWidget::Image => rbridge::RedwoodWidget::Image, ui::RedwoodWidget::Row => rbridge::RedwoodWidget::Row, ui::RedwoodWidget::Column => rbridge::RedwoodWidget::Column }}), destroy: None, append_child: None, insert_child: None, remove_child: None, set_text: None, set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::Destroy(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::Destroy, create: None, destroy: Some(rbridge::RedwoodChangeDestroy { id: r.id }), append_child: None, insert_child: None, remove_child: None, set_text: None, set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::AppendChild(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::AppendChild, create: None, destroy: None, append_child: Some(rbridge::RedwoodChangeAppendChild { parent: r.parent, child: r.child }), insert_child: None, remove_child: None, set_text: None, set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::InsertChild(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::InsertChild, create: None, destroy: None, append_child: None, insert_child: Some(rbridge::RedwoodChangeInsertChild { parent: r.parent, index: r.index, child: r.child }), remove_child: None, set_text: None, set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::RemoveChild(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::RemoveChild, create: None, destroy: None, append_child: None, insert_child: None, remove_child: Some(rbridge::RedwoodChangeRemoveChild { parent: r.parent, child: r.child }), set_text: None, set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::SetText(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::SetText, create: None, destroy: None, append_child: None, insert_child: None, remove_child: None, set_text: Some(rbridge::RedwoodChangeSetText { id: r.id, text: r.text }), set_enabled: None, set_image_url: None },
-            ui::RedwoodChange::SetEnabled(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::SetEnabled, create: None, destroy: None, append_child: None, insert_child: None, remove_child: None, set_text: None, set_enabled: Some(rbridge::RedwoodChangeSetEnabled { id: r.id, enabled: r.enabled }), set_image_url: None },
-            ui::RedwoodChange::SetImageUrl(r) => rbridge::RedwoodChangeRec { kind: rbridge::RedwoodChangeKind::SetImageUrl, create: None, destroy: None, append_child: None, insert_child: None, remove_child: None, set_text: None, set_enabled: None, set_image_url: Some(rbridge::RedwoodChangeSetImageUrl { id: r.id, url: r.url }) },
-        }).collect::<Vec<_>>();
-
-        let f = rbridge::RedwoodFrameRec { strings, changes };
-        rbridge::redwood_apply_to(panel_id, f);
+        redwood_panel::dispatch_frame(panel_id, frame);
         Ok(())
     }
 }
@@ -289,8 +277,16 @@ impl ui::Host for WasmState {
 impl version::Host for WasmState {
     async fn get_supported_range(&mut self) -> wasmtime::Result<version::VersionRange> {
         Ok(version::VersionRange {
-            min: version::Version { major: MIN_VERSION.major as u16, minor: MIN_VERSION.minor as u16, patch: MIN_VERSION.patch as u16 },
-            max: version::Version { major: MAX_VERSION.major as u16, minor: MAX_VERSION.minor as u16, patch: MAX_VERSION.patch as u16 },
+            min: version::Version {
+                major: MIN_VERSION.major as u16,
+                minor: MIN_VERSION.minor as u16,
+                patch: MIN_VERSION.patch as u16,
+            },
+            max: version::Version {
+                major: MAX_VERSION.major as u16,
+                minor: MAX_VERSION.minor as u16,
+                patch: MAX_VERSION.patch as u16,
+            },
         })
     }
 }

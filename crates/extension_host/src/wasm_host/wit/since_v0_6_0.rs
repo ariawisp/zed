@@ -6,20 +6,20 @@ use crate::wasm_host::wit::since_v0_6_0::{
     slash_command::SlashCommandOutputSection,
 };
 use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
-use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
+use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use extension::{
     ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
 };
-use futures::{AsyncReadExt, lock::Mutex};
-use futures::{FutureExt as _, io::BufReader};
+use futures::{io::BufReader, FutureExt as _};
+use futures::{lock::Mutex, AsyncReadExt};
 use gpui::{BackgroundExecutor, SharedString};
-use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
+use language::{language_settings::AllLanguageSettings, BinaryStatus, LanguageName};
 use project::project_settings::ProjectSettings;
 use semantic_version::SemanticVersion;
 use std::{
@@ -42,7 +42,7 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(0, 7, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../extension_api/wit/since_v0.6.0",
+    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v0.6.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,

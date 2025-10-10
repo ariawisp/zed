@@ -1,124 +1,841 @@
-use gpui::{IntoElement, Render, Window, Context as GContext, SharedString};
-use gpui::{div, img};
-use smol::channel::{unbounded, Receiver};
-use std::collections::{HashMap, HashSet};
+use crate::wasm_host::wit::since_v1_0_0::ui as wit_ui;
+use gpui::{div, img, Context as GContext, Div, IntoElement, Render, SharedString, Window};
+use log::warn;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use serde_json::{self, Value};
+use smol::channel::{unbounded, Receiver, Sender, TrySendError};
+use std::collections::{HashMap, HashSet, VecDeque};
+use ui::prelude::*;
 
-use redwood_gpui_bridge::{Cmd, NodeKind, register_panel_sender};
+const SCHEMA_STRIDE: u32 = 1_000_000;
+const BASIC_SCHEMA_INDEX: u32 = 0;
+const LAYOUT_SCHEMA_INDEX: u32 = 1;
 
-#[derive(Default, Clone)]
-struct TextNode { text: String }
-#[derive(Default, Clone)]
-struct ButtonNode { text: String, enabled: bool }
-#[derive(Default, Clone)]
-struct ImageNode { url: String }
+const WIDGET_TEXT_INPUT: u32 = 1;
+const WIDGET_TEXT: u32 = 2;
+const WIDGET_IMAGE: u32 = 3;
+const WIDGET_BUTTON: u32 = 4;
 
-#[derive(Clone)]
-enum Node {
-    Text(TextNode),
-    Button(ButtonNode),
-    Image(ImageNode),
-    Row,
-    Column,
+const LAYOUT_ROW: u32 = LAYOUT_SCHEMA_INDEX * SCHEMA_STRIDE + 1;
+const LAYOUT_COLUMN: u32 = LAYOUT_SCHEMA_INDEX * SCHEMA_STRIDE + 2;
+const LAYOUT_SPACER: u32 = LAYOUT_SCHEMA_INDEX * SCHEMA_STRIDE + 3;
+const LAYOUT_BOX: u32 = LAYOUT_SCHEMA_INDEX * SCHEMA_STRIDE + 4;
+
+const CHILDREN_TAG_DEFAULT: u32 = 1;
+
+const PROP_TEXT: u32 = 1;
+const PROP_BUTTON_ENABLED: u32 = 2;
+const PROP_IMAGE_URL: u32 = 1;
+
+const ROW_COL_PROP_WIDTH: u32 = 1;
+const ROW_COL_PROP_HEIGHT: u32 = 2;
+const ROW_COL_PROP_MARGIN: u32 = 3;
+const ROW_COL_PROP_OVERFLOW: u32 = 4;
+const ROW_COL_PROP_MAIN_ALIGN: u32 = 5;
+const ROW_COL_PROP_CROSS_ALIGN: u32 = 6;
+
+const SPACER_PROP_WIDTH: u32 = 1;
+const SPACER_PROP_HEIGHT: u32 = 2;
+
+const MOD_GROW: i32 = 1;
+const MOD_SHRINK: i32 = 2;
+const MOD_MARGIN: i32 = 3;
+const MOD_HORIZONTAL_ALIGNMENT: i32 = 4;
+const MOD_VERTICAL_ALIGNMENT: i32 = 5;
+const MOD_WIDTH: i32 = 6;
+const MOD_HEIGHT: i32 = 7;
+const MOD_SIZE: i32 = 8;
+const MOD_FLEX: i32 = 9;
+
+#[derive(Clone, Debug)]
+pub struct RedwoodFrameMessage {
+    pub changes: Vec<RedwoodChange>,
+}
+
+#[derive(Clone, Debug)]
+pub enum RedwoodChange {
+    Create {
+        id: u64,
+        widget: u32,
+    },
+    Destroy {
+        id: u64,
+    },
+    AddChild {
+        parent: u64,
+        slot: u32,
+        child: u64,
+        index: u32,
+    },
+    MoveChild {
+        parent: u64,
+        slot: u32,
+        from_index: u32,
+        to_index: u32,
+        count: u32,
+    },
+    RemoveChild {
+        parent: u64,
+        slot: u32,
+        index: u32,
+        count: u32,
+        detach: bool,
+    },
+    SetProperty {
+        id: u64,
+        widget: u32,
+        property: u32,
+        value_json: String,
+    },
+    SetModifiers {
+        id: u64,
+        elements: Vec<ModifierElement>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct ModifierElement {
+    pub tag: i32,
+    pub value_json: Option<String>,
+}
+
+impl From<wit_ui::RedwoodChange> for RedwoodChange {
+    fn from(change: wit_ui::RedwoodChange) -> Self {
+        match change {
+            wit_ui::RedwoodChange::Create(payload) => RedwoodChange::Create {
+                id: payload.id,
+                widget: payload.widget,
+            },
+            wit_ui::RedwoodChange::Destroy(payload) => RedwoodChange::Destroy { id: payload.id },
+            wit_ui::RedwoodChange::AddChild(payload) => RedwoodChange::AddChild {
+                parent: payload.parent,
+                slot: payload.slot,
+                child: payload.child,
+                index: payload.index,
+            },
+            wit_ui::RedwoodChange::MoveChild(payload) => RedwoodChange::MoveChild {
+                parent: payload.parent,
+                slot: payload.slot,
+                from_index: payload.from_index,
+                to_index: payload.to_index,
+                count: payload.count,
+            },
+            wit_ui::RedwoodChange::RemoveChild(payload) => RedwoodChange::RemoveChild {
+                parent: payload.parent,
+                slot: payload.slot,
+                index: payload.index,
+                count: payload.count,
+                detach: payload.detach,
+            },
+            wit_ui::RedwoodChange::SetProperty(payload) => RedwoodChange::SetProperty {
+                id: payload.id,
+                widget: payload.widget,
+                property: payload.property,
+                value_json: payload.value_json,
+            },
+            wit_ui::RedwoodChange::SetModifiers(payload) => RedwoodChange::SetModifiers {
+                id: payload.id,
+                elements: payload
+                    .elements
+                    .into_iter()
+                    .map(|element| ModifierElement {
+                        tag: element.tag,
+                        value_json: element.value_json,
+                    })
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl From<wit_ui::RedwoodFrame> for RedwoodFrameMessage {
+    fn from(frame: wit_ui::RedwoodFrame) -> Self {
+        RedwoodFrameMessage {
+            changes: frame.changes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+static PANEL_SENDERS: Lazy<Mutex<HashMap<u64, Sender<RedwoodFrameMessage>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static PENDING_FRAMES: Lazy<Mutex<HashMap<u64, VecDeque<RedwoodFrameMessage>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub fn dispatch_frame(panel_id: u64, frame: impl Into<RedwoodFrameMessage>) {
+    let frame = frame.into();
+    if let Some(sender) = PANEL_SENDERS.lock().get(&panel_id).cloned() {
+        if let Err(err) = sender.try_send(frame) {
+            match err {
+                TrySendError::Full(frame) | TrySendError::Closed(frame) => {
+                    warn!(
+                        "redwood-panel: queueing frame for panel {} (receiver not ready)",
+                        panel_id
+                    );
+                    PENDING_FRAMES
+                        .lock()
+                        .entry(panel_id)
+                        .or_default()
+                        .push_back(frame);
+                }
+            }
+        }
+    } else {
+        PENDING_FRAMES
+            .lock()
+            .entry(panel_id)
+            .or_default()
+            .push_back(frame);
+    }
+}
+
+fn register_panel_channel(panel_id: u64, sender: Sender<RedwoodFrameMessage>) {
+    PANEL_SENDERS.lock().insert(panel_id, sender.clone());
+
+    if let Some(mut pending) = PENDING_FRAMES.lock().remove(&panel_id) {
+        while let Some(frame) = pending.pop_front() {
+            if sender.try_send(frame).is_err() {
+                PENDING_FRAMES
+                    .lock()
+                    .entry(panel_id)
+                    .or_default()
+                    .extend(pending);
+                break;
+            }
+        }
+    }
+}
+
+fn unregister_panel_channel(panel_id: u64) {
+    PANEL_SENDERS.lock().remove(&panel_id);
+    PENDING_FRAMES.lock().remove(&panel_id);
+}
+
+#[derive(Clone, Debug)]
+struct Modifier {
+    tag: i32,
+    value: Option<Value>,
+}
+
+#[derive(Clone, Debug)]
+struct RedwoodNode {
+    widget_tag: u32,
+    properties: HashMap<u32, Value>,
+    modifiers: Vec<Modifier>,
+}
+
+impl RedwoodNode {
+    fn new(widget_tag: u32) -> Self {
+        Self {
+            widget_tag,
+            properties: HashMap::new(),
+            modifiers: Vec::new(),
+        }
+    }
 }
 
 pub struct RedwoodPanel {
-    nodes: HashMap<i64, Node>,
-    children: HashMap<i64, Vec<i64>>, // parent -> ordered children
-    roots: Vec<i64>,
-    rx: Receiver<Cmd>,
+    panel_id: u64,
+    nodes: HashMap<u64, RedwoodNode>,
+    children: HashMap<u64, Vec<u64>>,
+    roots: Vec<u64>,
+    rx: Receiver<RedwoodFrameMessage>,
 }
 
 impl RedwoodPanel {
     pub fn new(panel_id: u64, window: &mut Window, _cx: &mut GContext<Self>) -> Self {
-        let (tx, rx) = unbounded::<Cmd>();
-        register_panel_sender(panel_id, tx);
+        let (tx, rx) = unbounded::<RedwoodFrameMessage>();
+        register_panel_channel(panel_id, tx);
         super::register_panel_window(panel_id, window.window_handle());
-        Self { nodes: HashMap::new(), children: HashMap::new(), roots: Vec::new(), rx }
+        Self {
+            panel_id,
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+            roots: Vec::new(),
+            rx,
+        }
     }
 
-    fn apply_cmd(&mut self, cmd: Cmd) {
-        match cmd {
-            Cmd::Create{handle,kind} => {
-                let n = match kind {
-                    NodeKind::Text => Node::Text(TextNode::default()),
-                    NodeKind::Button => Node::Button(ButtonNode::default()),
-                    NodeKind::Image => Node::Image(ImageNode::default()),
-                    NodeKind::Row => Node::Row,
-                    NodeKind::Column => Node::Column,
-                };
-                self.nodes.insert(handle, n);
-                if !self.children.contains_key(&handle) { self.children.insert(handle, Vec::new()); }
-            }
-            Cmd::Destroy{handle} => {
-                self.nodes.remove(&handle);
-                self.children.remove(&handle);
-                for ch in self.children.values_mut() { ch.retain(|&h| h != handle); }
-                self.roots.retain(|&h| h != handle);
-            }
-            Cmd::AppendChild{parent,child} => {
-                self.children.entry(parent).or_default().push(child);
-                if let Some(pos) = self.roots.iter().position(|&h| h==child) { self.roots.remove(pos); }
-                if !self.children.contains_key(&parent) { self.children.insert(parent, Vec::new()); }
-            }
-            Cmd::InsertChild{parent,index,child} => {
-                let e = self.children.entry(parent).or_default();
-                let idx = index.max(0) as usize;
-                if idx >= e.len() { e.push(child); } else { e.insert(idx, child); }
-                if let Some(pos) = self.roots.iter().position(|&h| h==child) { self.roots.remove(pos); }
-            }
-            Cmd::RemoveChild{parent,child} => {
-                self.children.entry(parent).or_default().retain(|&h| h!=child);
-            }
-            Cmd::SetText{handle,text} => { if let Some(Node::Text(n)) = self.nodes.get_mut(&handle) { n.text = text; } }
-            Cmd::SetButtonText{handle,text} => { if let Some(Node::Button(n)) = self.nodes.get_mut(&handle) { n.text = text; } }
-            Cmd::SetButtonEnabled{handle,enabled} => { if let Some(Node::Button(n)) = self.nodes.get_mut(&handle) { n.enabled = enabled; } }
-            Cmd::SetImageUrl{handle,url} => { if let Some(Node::Image(n)) = self.nodes.get_mut(&handle) { n.url = url; } }
-            Cmd::SetImageFit{..} => {}
-            Cmd::SetImageRadius{..} => {}
+    fn apply_frame(&mut self, frame: RedwoodFrameMessage) {
+        for change in frame.changes {
+            self.apply_change(change);
         }
+        self.roots.clear();
+    }
+
+    fn apply_change(&mut self, change: RedwoodChange) {
+        match change {
+            RedwoodChange::Create { id, widget } => {
+                self.nodes.insert(id, RedwoodNode::new(widget));
+                self.children.entry(id).or_default();
+            }
+            RedwoodChange::Destroy { id } => {
+                self.nodes.remove(&id);
+                self.children.remove(&id);
+                for children in self.children.values_mut() {
+                    children.retain(|child| *child != id);
+                }
+            }
+            RedwoodChange::AddChild {
+                parent,
+                slot,
+                child,
+                index,
+            } => {
+                if slot != CHILDREN_TAG_DEFAULT {
+                    warn!(
+                        "redwood-panel: unsupported children slot {} on {}",
+                        slot, parent
+                    );
+                    return;
+                }
+                let children = self.children.entry(parent).or_default();
+                let index = (index as usize).min(children.len());
+                if let Some(position) = self.roots.iter().position(|&root| root == child) {
+                    self.roots.remove(position);
+                }
+                if !children.contains(&child) {
+                    children.insert(index, child);
+                }
+            }
+            RedwoodChange::MoveChild {
+                parent,
+                slot,
+                from_index,
+                to_index,
+                count,
+            } => {
+                if slot != CHILDREN_TAG_DEFAULT {
+                    warn!(
+                        "redwood-panel: unsupported move slot {} on {}",
+                        slot, parent
+                    );
+                    return;
+                }
+                if let Some(children) = self.children.get_mut(&parent) {
+                    let len = children.len();
+                    if len == 0 || count == 0 {
+                        return;
+                    }
+                    let from = (from_index as usize).min(len - 1);
+                    let count = (count as usize).min(len - from);
+                    let to = (to_index as usize).min(len - count);
+                    let mut segment: Vec<u64> = children
+                        .splice(from..from + count, std::iter::empty())
+                        .collect();
+                    for (offset, child) in segment.drain(..).enumerate() {
+                        children.insert(to + offset, child);
+                    }
+                }
+            }
+            RedwoodChange::RemoveChild {
+                parent,
+                slot,
+                index,
+                count,
+                detach: _,
+            } => {
+                if slot != CHILDREN_TAG_DEFAULT {
+                    warn!(
+                        "redwood-panel: unsupported remove slot {} on {}",
+                        slot, parent
+                    );
+                    return;
+                }
+                if let Some(children) = self.children.get_mut(&parent) {
+                    let len = children.len();
+                    if len == 0 {
+                        return;
+                    }
+                    let start = (index as usize).min(len - 1);
+                    let count = (count as usize).min(len - start);
+                    children.drain(start..start + count);
+                }
+            }
+            RedwoodChange::SetProperty {
+                id,
+                property,
+                value_json,
+                ..
+            } => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    match serde_json::from_str::<Value>(&value_json) {
+                        Ok(value) => {
+                            node.properties.insert(property, value);
+                        }
+                        Err(error) => {
+                            warn!(
+                                "redwood-panel: failed to parse property {} for widget {}: {error}",
+                                property, id
+                            );
+                        }
+                    }
+                }
+            }
+            RedwoodChange::SetModifiers { id, elements } => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    let mut modifiers = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        let value = match element.value_json {
+                            Some(json) => match serde_json::from_str::<Value>(&json) {
+                                Ok(value) => Some(value),
+                                Err(error) => {
+                                    warn!(
+                                        "redwood-panel: failed to parse modifier {} for widget {}: {error}",
+                                        element.tag, id
+                                    );
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        modifiers.push(Modifier {
+                            tag: element.tag,
+                            value,
+                        });
+                    }
+                    node.modifiers = modifiers;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RedwoodPanel {
+    fn drop(&mut self) {
+        unregister_panel_channel(self.panel_id);
     }
 }
 
 impl Render for RedwoodPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut GContext<Self>) -> impl IntoElement {
-        while let Ok(cmd) = self.rx.try_recv() { self.apply_cmd(cmd); }
+        while let Ok(frame) = self.rx.try_recv() {
+            self.apply_frame(frame);
+        }
 
-        let mut root = div().w_full().h_full().scroll_y();
+        let mut root = v_flex().size_full().overflow_hidden();
         if let Some(children) = self.children.get(&0) {
-            for &h in children { root = root.child(render_node(h, &self.nodes, &self.children, cx)); }
+            for &child in children {
+                root = root.child(self.render_node(child, cx));
+            }
         } else {
             if self.roots.is_empty() {
                 let mut has_parent = HashSet::new();
-                for (_p, ch) in &self.children { for &h in ch { has_parent.insert(h); } }
-                for (&h, _) in &self.nodes { if !has_parent.contains(&h) { self.roots.push(h); } }
+                for children in self.children.values() {
+                    for &child in children {
+                        has_parent.insert(child);
+                    }
+                }
+                self.roots = self
+                    .nodes
+                    .keys()
+                    .copied()
+                    .filter(|id| !has_parent.contains(id))
+                    .collect();
             }
-            for &h in &self.roots { root = root.child(render_node(h, &self.nodes, &self.children, cx)); }
+            for &child in &self.roots {
+                root = root.child(self.render_node(child, cx));
+            }
         }
         root
     }
 }
 
-fn render_node(handle: i64, nodes: &HashMap<i64, Node>, children: &HashMap<i64, Vec<i64>>, _cx: &mut GContext<RedwoodPanel>) -> impl IntoElement {
-    match nodes.get(&handle) {
-        Some(Node::Text(n)) => { div().child(gpui::StyledText::new(SharedString::from(n.text.clone()))) }
-        Some(Node::Button(n)) => {
-            let mut d = div().p_2().border_1();
-            if !n.enabled { d = d.opacity(0.5); }
-            let label = gpui::StyledText::new(SharedString::from(n.text.clone()));
-            d.child(label)
+impl RedwoodPanel {
+    fn render_node(&self, node_id: u64, cx: &mut GContext<Self>) -> AnyElement {
+        let node = match self.nodes.get(&node_id) {
+            Some(node) => node,
+            None => return div().into_any_element(),
+        };
+
+        match node.widget_tag {
+            WIDGET_TEXT => self.render_text(node).into_any_element(),
+            WIDGET_BUTTON => self.render_button(node_id, node).into_any_element(),
+            WIDGET_IMAGE => self.render_image(node).into_any_element(),
+            WIDGET_TEXT_INPUT => self.render_text_input(node).into_any_element(),
+            LAYOUT_ROW => self.render_row(node_id, node, cx),
+            LAYOUT_COLUMN => self.render_column(node_id, node, cx),
+            LAYOUT_SPACER => self.render_spacer(node).into_any_element(),
+            LAYOUT_BOX => self.render_box(node_id, node, cx),
+            other => {
+                warn!("redwood-panel: unsupported widget tag {}", other);
+                div().into_any_element()
+            }
         }
-        Some(Node::Image(n)) => { img(n.url.clone()) }
-        Some(Node::Row) => {
-            let mut row = div().flex_row().gap_2();
-            for &ch in children.get(&handle).into_iter().flatten() { row = row.child(render_node(ch, nodes, children, _cx)); }
-            row
+    }
+
+    fn render_text(&self, node: &RedwoodNode) -> Label {
+        let text = node
+            .properties
+            .get(&PROP_TEXT)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        Label::new(text)
+            .size(LabelSize::Small)
+            .line_height_style(LineHeightStyle::UiLabel)
+    }
+
+    fn render_button(&self, node_id: u64, node: &RedwoodNode) -> Button {
+        let label = node
+            .properties
+            .get(&PROP_TEXT)
+            .and_then(Value::as_str)
+            .unwrap_or("Button");
+        let enabled = node
+            .properties
+            .get(&PROP_BUTTON_ENABLED)
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        Button::new(ElementId::Integer(node_id), SharedString::from(label))
+            .style(ButtonStyle::Filled)
+            .disabled(!enabled)
+    }
+
+    fn render_image(&self, node: &RedwoodNode) -> AnyElement {
+        let src = node
+            .properties
+            .get(&PROP_IMAGE_URL)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        img(src).into_any_element()
+    }
+
+    fn render_text_input(&self, node: &RedwoodNode) -> AnyElement {
+        let hint = node
+            .properties
+            .get(&PROP_TEXT)
+            .and_then(Value::as_str)
+            .unwrap_or("Text Input");
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .px(px(8.0))
+            .border_1()
+            .rounded(px(6.0))
+            .child(Label::new(hint))
+            .into_any_element()
+    }
+
+    fn render_row(&self, node_id: u64, node: &RedwoodNode, cx: &mut GContext<Self>) -> AnyElement {
+        let mut container = h_flex().gap(px(8.0));
+        container = self.apply_container_constraints(container, node);
+        container = self.apply_container_alignment(container, node, Orientation::Horizontal);
+        container = self.apply_container_margin(container, node);
+        container = self.apply_container_overflow(container, node, Orientation::Horizontal);
+
+        if let Some(children) = self.children.get(&node_id) {
+            for &child in children {
+                let element = self.render_node(child, cx);
+                container = container.child(self.apply_child_modifiers(child, element));
+            }
         }
-        Some(Node::Column) => {
-            let mut col = div().flex_col().gap_2();
-            for &ch in children.get(&handle).into_iter().flatten() { col = col.child(render_node(ch, nodes, children, _cx)); }
-            col
+
+        container.into_any_element()
+    }
+
+    fn render_column(
+        &self,
+        node_id: u64,
+        node: &RedwoodNode,
+        cx: &mut GContext<Self>,
+    ) -> AnyElement {
+        let mut container = v_flex().gap(px(8.0));
+        container = self.apply_container_constraints(container, node);
+        container = self.apply_container_alignment(container, node, Orientation::Vertical);
+        container = self.apply_container_margin(container, node);
+        container = self.apply_container_overflow(container, node, Orientation::Vertical);
+
+        if let Some(children) = self.children.get(&node_id) {
+            for &child in children {
+                let element = self.render_node(child, cx);
+                container = container.child(self.apply_child_modifiers(child, element));
+            }
         }
-        None => div()
+
+        container.into_any_element()
+    }
+
+    fn render_box(&self, node_id: u64, node: &RedwoodNode, cx: &mut GContext<Self>) -> AnyElement {
+        let mut container = div().relative().flex().flex_col();
+        container = self.apply_container_constraints(container, node);
+        container = self.apply_container_margin(container, node);
+
+        if let Some(children) = self.children.get(&node_id) {
+            for &child in children {
+                let element = self.render_node(child, cx);
+                container = container.child(self.apply_child_modifiers(child, element));
+            }
+        }
+
+        container.into_any_element()
+    }
+
+    fn render_spacer(&self, node: &RedwoodNode) -> Div {
+        let width = node
+            .properties
+            .get(&SPACER_PROP_WIDTH)
+            .and_then(Value::as_f64)
+            .map(|value| px(value as f32));
+        let height = node
+            .properties
+            .get(&SPACER_PROP_HEIGHT)
+            .and_then(Value::as_f64)
+            .map(|value| px(value as f32));
+
+        let mut spacer = div().flex_none();
+        if let Some(width) = width {
+            spacer = spacer.w(width);
+        }
+        if let Some(height) = height {
+            spacer = spacer.h(height);
+        }
+        spacer
+    }
+
+    fn apply_container_constraints(&self, mut element: Div, node: &RedwoodNode) -> Div {
+        if let Some(width) = node
+            .properties
+            .get(&ROW_COL_PROP_WIDTH)
+            .and_then(Value::as_i64)
+        {
+            if width == 1 {
+                element = element.w_full();
+            }
+        }
+        if let Some(height) = node
+            .properties
+            .get(&ROW_COL_PROP_HEIGHT)
+            .and_then(Value::as_i64)
+        {
+            if height == 1 {
+                element = element.h_full();
+            }
+        }
+        element
+    }
+
+    fn apply_container_alignment(
+        &self,
+        mut element: Div,
+        node: &RedwoodNode,
+        orientation: Orientation,
+    ) -> Div {
+        if let Some(main) = node
+            .properties
+            .get(&ROW_COL_PROP_MAIN_ALIGN)
+            .and_then(Value::as_i64)
+        {
+            element = match (orientation, main) {
+                (_, 1) => element.justify_center(),
+                (_, 2) => element.justify_end(),
+                (_, 3) => element.justify_between(),
+                (_, 4) => element.justify_between(),
+                (_, 5) => element.justify_between(),
+                _ => element.justify_start(),
+            };
+        }
+        if let Some(cross) = node
+            .properties
+            .get(&ROW_COL_PROP_CROSS_ALIGN)
+            .and_then(Value::as_i64)
+        {
+            element = match cross {
+                1 => element.items_center(),
+                2 => element.items_end(),
+                _ => element.items_start(),
+            };
+        }
+        element
+    }
+
+    fn apply_container_margin(&self, mut element: Div, node: &RedwoodNode) -> Div {
+        if let Some(margin) = node.properties.get(&ROW_COL_PROP_MARGIN) {
+            if let Some(edge) = parse_margin(margin) {
+                element = element
+                    .ml(px(edge.start))
+                    .mr(px(edge.end))
+                    .mt(px(edge.top))
+                    .mb(px(edge.bottom));
+            }
+        }
+        element
+    }
+
+    fn apply_container_overflow(
+        &self,
+        mut element: Div,
+        node: &RedwoodNode,
+        orientation: Orientation,
+    ) -> Div {
+        if let Some(overflow) = node
+            .properties
+            .get(&ROW_COL_PROP_OVERFLOW)
+            .and_then(Value::as_i64)
+        {
+            if overflow == 1 {
+                element = match orientation {
+                    Orientation::Horizontal => element.overflow_x_scroll(),
+                    Orientation::Vertical => element.overflow_y_scroll(),
+                };
+            }
+        }
+        element
+    }
+
+    fn apply_child_modifiers(&self, node_id: u64, element: AnyElement) -> AnyElement {
+        let node = match self.nodes.get(&node_id) {
+            Some(node) => node,
+            None => return element,
+        };
+
+        let mut wrapper = div().child(element);
+
+        for modifier in &node.modifiers {
+            match modifier.tag {
+                MOD_GROW | MOD_FLEX => {
+                    wrapper = wrapper.flex_grow();
+                }
+                MOD_SHRINK => {
+                    wrapper = wrapper.flex_shrink();
+                }
+                MOD_MARGIN => {
+                    if let Some(value) = modifier.value.as_ref() {
+                        if let Some(edge) = parse_margin(value) {
+                            wrapper = wrapper
+                                .ml(px(edge.start))
+                                .mr(px(edge.end))
+                                .mt(px(edge.top))
+                                .mb(px(edge.bottom));
+                        }
+                    }
+                }
+                MOD_WIDTH => {
+                    if let Some(width) = modifier
+                        .value
+                        .as_ref()
+                        .and_then(|value| extract_field_dp(value, "width"))
+                    {
+                        wrapper = wrapper.w(px(width));
+                    }
+                }
+                MOD_HEIGHT => {
+                    if let Some(height) = modifier
+                        .value
+                        .as_ref()
+                        .and_then(|value| extract_field_dp(value, "height"))
+                    {
+                        wrapper = wrapper.h(px(height));
+                    }
+                }
+                MOD_SIZE => {
+                    if let Some(Value::Object(map)) = modifier.value.as_ref() {
+                        if let Some(width) = map
+                            .get("width")
+                            .and_then(|value| extract_field_dp(value, "width"))
+                        {
+                            wrapper = wrapper.w(px(width));
+                        }
+                        if let Some(height) = map
+                            .get("height")
+                            .and_then(|value| extract_field_dp(value, "height"))
+                        {
+                            wrapper = wrapper.h(px(height));
+                        }
+                    }
+                }
+                MOD_HORIZONTAL_ALIGNMENT | MOD_VERTICAL_ALIGNMENT => {
+                    // TODO: map align-self semantics.
+                }
+                other => {
+                    warn!("redwood-panel: unsupported modifier {other} on {}", node_id);
+                }
+            }
+        }
+
+        wrapper.into_any_element()
     }
 }
 
+fn extract_field_dp(value: &Value, field: &str) -> Option<f32> {
+    match value {
+        Value::Object(map) => {
+            if let Some(inner) = map.get(field) {
+                dp_from_value(inner)
+            } else {
+                dp_from_value(value)
+            }
+        }
+        _ => dp_from_value(value),
+    }
+}
+
+fn dp_from_value(value: &Value) -> Option<f32> {
+    match value {
+        Value::Number(number) => number.as_f64().map(|f| f as f32),
+        Value::Object(map) => {
+            if let Some(Value::Number(number)) = map.get("value") {
+                number.as_f64().map(|f| f as f32)
+            } else if map.len() == 1 {
+                map.values().next().and_then(dp_from_value)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Orientation {
+    Horizontal,
+    Vertical,
+}
+
+struct EdgeInsets {
+    start: f32,
+    end: f32,
+    top: f32,
+    bottom: f32,
+}
+
+fn parse_margin(value: &Value) -> Option<EdgeInsets> {
+    fn parse_inner(object: &serde_json::Map<String, Value>) -> EdgeInsets {
+        let start = object
+            .get("start")
+            .and_then(Value::as_f64)
+            .unwrap_or_default() as f32;
+        let end = object
+            .get("end")
+            .and_then(Value::as_f64)
+            .unwrap_or(start as f64) as f32;
+        let top = object
+            .get("top")
+            .and_then(Value::as_f64)
+            .unwrap_or_default() as f32;
+        let bottom = object
+            .get("bottom")
+            .and_then(Value::as_f64)
+            .unwrap_or(top as f64) as f32;
+        EdgeInsets {
+            start,
+            end,
+            top,
+            bottom,
+        }
+    }
+
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::Object(inner)) = map.get("margin") {
+                Some(parse_inner(inner))
+            } else {
+                Some(parse_inner(map))
+            }
+        }
+        _ => None,
+    }
+}

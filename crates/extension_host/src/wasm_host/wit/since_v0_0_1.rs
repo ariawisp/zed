@@ -1,6 +1,6 @@
 use super::latest;
-use crate::wasm_host::WasmState;
 use crate::wasm_host::wit::since_v0_0_4;
+use crate::wasm_host::WasmState;
 use anyhow::Result;
 use extension::{ExtensionLanguageServerProxy, WorktreeDelegate};
 use gpui::BackgroundExecutor;
@@ -14,7 +14,7 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 0, 1);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../extension_api/wit/since_v0.0.1",
+    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v0.0.1",
     with: {
          "worktree": ExtensionWorktree,
          "zed:extension/github": latest::zed::extension::github,

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 
-ZED_WIT="$ROOT_DIR/crates/extension_api/wit/since_v1.0.0/redwood/protocol.wit"
+ZED_WIT="$(cd "$ROOT_DIR/.." && pwd)/zed-extension-wit/wit/redwood/protocol/protocol.wit"
 REDWOOD_WIT="$(cd "$ROOT_DIR/.." && pwd)/redwood/wit/protocol/protocol.wit"
 
 if [[ ! -f "$ZED_WIT" ]]; then
@@ -29,4 +29,3 @@ fi
 
 echo "Protocol WIT OK ($ZED_SHA)"
 exit 0
-
