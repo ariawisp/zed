@@ -535,6 +535,32 @@ impl GeneratedHostAdapter {
         );
         panel.apply_frame(frame);
     }
+
+    pub fn render_widget(
+        panel: &RedwoodPanel,
+        node_id: u64,
+        cx: &mut GContext<RedwoodPanel>,
+    ) -> AnyElement {
+        let node = match panel.nodes.get(&node_id) {
+            Some(node) => node,
+            None => return div().into_any_element(),
+        };
+
+        match node.widget_tag {
+            WIDGET_TEXT => panel.render_text(node).into_any_element(),
+            WIDGET_BUTTON => panel.render_button(node_id, node).into_any_element(),
+            WIDGET_IMAGE => panel.render_image(node).into_any_element(),
+            WIDGET_TEXT_INPUT => panel.render_text_input(node).into_any_element(),
+            LAYOUT_ROW => panel.render_row(node_id, node, cx),
+            LAYOUT_COLUMN => panel.render_column(node_id, node, cx),
+            LAYOUT_SPACER => panel.render_spacer(node).into_any_element(),
+            LAYOUT_BOX => panel.render_box(node_id, node, cx),
+            other => {
+                warn!("redwood-panel: unsupported widget tag {}", other);
+                div().into_any_element()
+            }
+        }
+    }
 }
 
 impl RedwoodPanel {
