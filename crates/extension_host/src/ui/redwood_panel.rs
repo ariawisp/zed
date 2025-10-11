@@ -1,12 +1,20 @@
 use crate::wasm_host::wit::since_v1_0_0::ui as wit_ui;
 use gpui::{div, img, Context as GContext, Div, IntoElement, Render, SharedString, Window};
-use log::warn;
+use log::{info, warn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde_json::{self, Value};
 use smol::channel::{unbounded, Receiver, Sender, TrySendError};
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::prelude::*;
+
+// NOTE: This module is still a handcrafted preview renderer. Once the generated Redwood host
+// bindings land, this file should be replaced with the codegen-produced widget factories and
+// modifier translators, leaving only the event queue plumbing in place.
+//
+// To ease that transition we maintain a thin façade (`GeneratedHostAdapter`) whose methods mirror
+// what the generated code will eventually expose. When the FIR-based pipeline lands we can swap the
+// implementation without touching the surrounding channel/queue infrastructure.
 
 const SCHEMA_STRIDE: u32 = 1_000_000;
 const BASIC_SCHEMA_INDEX: u32 = 0;
@@ -27,6 +35,12 @@ const CHILDREN_TAG_DEFAULT: u32 = 1;
 const PROP_TEXT: u32 = 1;
 const PROP_BUTTON_ENABLED: u32 = 2;
 const PROP_IMAGE_URL: u32 = 1;
+
+// Redwood UI Basic event tags.
+const EVENT_TEXT_INPUT_ON_CHANGE: u32 = 3;
+const EVENT_IMAGE_ON_CLICK: u32 = 2;
+const EVENT_BUTTON_ON_CLICK: u32 = 3;
+const EVENT_TOGGLE_ON_CHANGE: u32 = 4;
 
 const ROW_COL_PROP_WIDTH: u32 = 1;
 const ROW_COL_PROP_HEIGHT: u32 = 2;
@@ -161,6 +175,8 @@ static PANEL_SENDERS: Lazy<Mutex<HashMap<u64, Sender<RedwoodFrameMessage>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static PENDING_FRAMES: Lazy<Mutex<HashMap<u64, VecDeque<RedwoodFrameMessage>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static EVENT_QUEUES: Lazy<Mutex<HashMap<u64, Vec<wit_ui::RedwoodEvent>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn dispatch_frame(panel_id: u64, frame: impl Into<RedwoodFrameMessage>) {
     let frame = frame.into();
@@ -209,6 +225,7 @@ fn register_panel_channel(panel_id: u64, sender: Sender<RedwoodFrameMessage>) {
 fn unregister_panel_channel(panel_id: u64) {
     PANEL_SENDERS.lock().remove(&panel_id);
     PENDING_FRAMES.lock().remove(&panel_id);
+    EVENT_QUEUES.lock().remove(&panel_id);
 }
 
 #[derive(Clone, Debug)]
@@ -410,7 +427,7 @@ impl Drop for RedwoodPanel {
 impl Render for RedwoodPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut GContext<Self>) -> impl IntoElement {
         while let Ok(frame) = self.rx.try_recv() {
-            self.apply_frame(frame);
+            GeneratedHostAdapter::apply_frame(self, frame);
         }
 
         let mut root = v_flex().size_full().overflow_hidden();
@@ -441,27 +458,88 @@ impl Render for RedwoodPanel {
     }
 }
 
+pub fn queue_event(panel_id: u64, event: wit_ui::RedwoodEvent) {
+    EVENT_QUEUES
+        .lock()
+        .entry(panel_id)
+        .or_default()
+        .push(event);
+}
+
+pub fn drain_events(panel_id: u64) -> Vec<wit_ui::RedwoodEvent> {
+    EVENT_QUEUES.lock().remove(&panel_id).unwrap_or_default()
+}
+
+fn enqueue_event(
+    panel_id: u64,
+    node_id: u64,
+    widget_tag: u32,
+    event_tag: u32,
+    args_json: Vec<String>,
+) {
+    queue_event(
+        panel_id,
+        wit_ui::RedwoodEvent {
+            id: node_id,
+            widget: widget_tag,
+            event: event_tag,
+            args_json,
+        },
+    );
+}
+
+pub fn emit_button_click(panel_id: u64, node_id: u64) {
+    enqueue_event(panel_id, node_id, WIDGET_BUTTON, EVENT_BUTTON_ON_CLICK, Vec::new());
+}
+
+pub fn emit_toggle_change(panel_id: u64, node_id: u64, checked: bool) {
+    enqueue_event(
+        panel_id,
+        node_id,
+        WIDGET_BUTTON, // Placeholder; replace with toggle widget tag once mapped.
+        EVENT_TOGGLE_ON_CHANGE,
+        vec![checked.to_string()],
+    );
+}
+
+pub fn emit_text_change(panel_id: u64, node_id: u64, value: &str) {
+    enqueue_event(
+        panel_id,
+        node_id,
+        WIDGET_TEXT_INPUT,
+        EVENT_TEXT_INPUT_ON_CHANGE,
+        vec![serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())],
+    );
+}
+
+pub fn emit_menu_select(panel_id: u64, node_id: u64, item_id: &str) {
+    enqueue_event(
+        panel_id,
+        node_id,
+        WIDGET_BUTTON, // Placeholder until menu widget tags are wired.
+        EVENT_IMAGE_ON_CLICK,
+        vec![serde_json::to_string(item_id).unwrap_or_else(|_| format!("\"{item_id}\""))],
+    );
+}
+
+/// Temporary façade that mimics the API surface we expect from the generated Redwood GPUI host
+/// adapter. The current implementation just logs the mapping and updates the handcrafted tree;
+/// once codegen lands, replace this struct with the generated host factory.
+pub struct GeneratedHostAdapter;
+
+impl GeneratedHostAdapter {
+    pub fn apply_frame(panel: &mut RedwoodPanel, frame: RedwoodFrameMessage) {
+        info!(
+            "redwood-panel: applying frame with {} changes (preview shim)",
+            frame.changes.len()
+        );
+        panel.apply_frame(frame);
+    }
+}
+
 impl RedwoodPanel {
     fn render_node(&self, node_id: u64, cx: &mut GContext<Self>) -> AnyElement {
-        let node = match self.nodes.get(&node_id) {
-            Some(node) => node,
-            None => return div().into_any_element(),
-        };
-
-        match node.widget_tag {
-            WIDGET_TEXT => self.render_text(node).into_any_element(),
-            WIDGET_BUTTON => self.render_button(node_id, node).into_any_element(),
-            WIDGET_IMAGE => self.render_image(node).into_any_element(),
-            WIDGET_TEXT_INPUT => self.render_text_input(node).into_any_element(),
-            LAYOUT_ROW => self.render_row(node_id, node, cx),
-            LAYOUT_COLUMN => self.render_column(node_id, node, cx),
-            LAYOUT_SPACER => self.render_spacer(node).into_any_element(),
-            LAYOUT_BOX => self.render_box(node_id, node, cx),
-            other => {
-                warn!("redwood-panel: unsupported widget tag {}", other);
-                div().into_any_element()
-            }
-        }
+        GeneratedHostAdapter::render_widget(self, node_id, cx)
     }
 
     fn render_text(&self, node: &RedwoodNode) -> Label {
@@ -488,9 +566,13 @@ impl RedwoodPanel {
             .and_then(Value::as_bool)
             .unwrap_or(true);
 
+        let panel_id = self.panel_id;
         Button::new(ElementId::Integer(node_id), SharedString::from(label))
             .style(ButtonStyle::Filled)
             .disabled(!enabled)
+            .on_click(move |_, _, _| {
+                emit_button_click(panel_id, node_id);
+            })
     }
 
     fn render_image(&self, node: &RedwoodNode) -> AnyElement {

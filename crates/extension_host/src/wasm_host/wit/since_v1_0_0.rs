@@ -271,6 +271,13 @@ impl ui::Host for WasmState {
         redwood_panel::dispatch_frame(panel_id, frame);
         Ok(())
     }
+
+    async fn poll_events(
+        &mut self,
+        panel_id: u64,
+    ) -> wasmtime::Result<Vec<ui::RedwoodEvent>> {
+        Ok(redwood_panel::drain_events(panel_id))
+    }
 }
 
 // Version handshake: report supported API range.
