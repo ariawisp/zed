@@ -5732,9 +5732,11 @@ dependencies = [
  "theme",
  "theme_extension",
  "toml 0.8.20",
+ "ui",
  "url",
  "wasmparser 0.221.3",
  "wasmtime",
+ "wasmtime-runtime",
  "wasmtime-wasi",
  "workspace-hack",
  "zed-collections",
@@ -18023,6 +18025,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmtime-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
 name = "wasmtime-slab"
 version = "29.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20059,6 +20070,7 @@ dependencies = [
  "node_runtime",
  "notifications",
  "onboarding",
+ "once_cell",
  "outline",
  "outline_panel",
  "parking_lot",
@@ -20114,6 +20126,7 @@ dependencies = [
  "uuid",
  "vim",
  "vim_mode_setting",
+ "wasmtime",
  "watch",
  "web_search",
  "web_search_providers",

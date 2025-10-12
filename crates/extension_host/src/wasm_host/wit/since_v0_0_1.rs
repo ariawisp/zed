@@ -14,11 +14,12 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 0, 1);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v0.0.1",
+    path: "../../../zed-extension-wit/wit",
+    world: "zed-extension:extension/extension@0.0.1",
     with: {
          "worktree": ExtensionWorktree,
-         "zed:extension/github": latest::zed::extension::github,
-         "zed:extension/platform": latest::zed::extension::platform,
+         "zed-extension:github/github@1.0.0": latest::zed_extension::github::github,
+         "zed-extension:platform/platform@1.0.0": latest::zed_extension::platform::platform,
     },
 });
 
@@ -90,21 +91,26 @@ impl HostWorktree for WasmState {
 
 impl ExtensionImports for WasmState {
     async fn node_binary_path(&mut self) -> wasmtime::Result<Result<String, String>> {
-        latest::nodejs::Host::node_binary_path(self).await
+        latest::zed_extension::nodejs::nodejs::Host::node_binary_path(self).await
     }
 
     async fn npm_package_latest_version(
         &mut self,
         package_name: String,
     ) -> wasmtime::Result<Result<String, String>> {
-        latest::nodejs::Host::npm_package_latest_version(self, package_name).await
+        latest::zed_extension::nodejs::nodejs::Host::npm_package_latest_version(self, package_name)
+            .await
     }
 
     async fn npm_package_installed_version(
         &mut self,
         package_name: String,
     ) -> wasmtime::Result<Result<Option<String>, String>> {
-        latest::nodejs::Host::npm_package_installed_version(self, package_name).await
+        latest::zed_extension::nodejs::nodejs::Host::npm_package_installed_version(
+            self,
+            package_name,
+        )
+        .await
     }
 
     async fn npm_install_package(
@@ -112,7 +118,12 @@ impl ExtensionImports for WasmState {
         package_name: String,
         version: String,
     ) -> wasmtime::Result<Result<(), String>> {
-        latest::nodejs::Host::npm_install_package(self, package_name, version).await
+        latest::zed_extension::nodejs::nodejs::Host::npm_install_package(
+            self,
+            package_name,
+            version,
+        )
+        .await
     }
 
     async fn latest_github_release(
@@ -120,11 +131,11 @@ impl ExtensionImports for WasmState {
         repo: String,
         options: GithubReleaseOptions,
     ) -> wasmtime::Result<Result<GithubRelease, String>> {
-        latest::zed::extension::github::Host::latest_github_release(self, repo, options).await
+        latest::zed_extension::github::github::Host::latest_github_release(self, repo, options).await
     }
 
     async fn current_platform(&mut self) -> Result<(Os, Architecture)> {
-        latest::zed::extension::platform::Host::current_platform(self).await
+        latest::zed_extension::platform::platform::Host::current_platform(self).await
     }
 
     async fn set_language_server_installation_status(

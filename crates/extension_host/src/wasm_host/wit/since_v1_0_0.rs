@@ -1,12 +1,4 @@
 use crate::ui::redwood_panel;
-use crate::wasm_host::wit::since_v1_0_0::{
-    dap::{
-        AttachRequest, BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, LaunchRequest,
-        StartDebuggingRequestArguments, TcpArguments, TcpArgumentsTemplate,
-    },
-    slash_command::SlashCommandOutputSection,
-};
-use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
 use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
@@ -43,21 +35,28 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(1, 0, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v1.0.0",
+    path: "../../../zed-extension-wit/wit",
+    world: "zed-extension:extension/extension@1.0.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
          "key-value-store": ExtensionKeyValueStore,
-         "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream
+         "zed-extension:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
     },
 });
 
-pub use self::zed::extension::*;
 
 mod settings {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/since_v1.0.0/settings.rs"));
 }
+
+pub use self::zed_extension::lsp::lsp::{
+    CompletionKind,
+    CompletionLabelDetails,
+    InsertTextFormat,
+    SymbolKind,
+};
 
 pub type ExtensionWorktree = Arc<dyn WorktreeDelegate>;
 pub type ExtensionProject = Arc<dyn ProjectDelegate>;

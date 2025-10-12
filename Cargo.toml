@@ -722,6 +722,8 @@ yawc = "0.2.5"
 zeroize = "1.8"
 zstd = "0.11"
 
+once_cell = "1.21.3"
+
 [workspace.dependencies.windows]
 version = "0.61"
 features = [

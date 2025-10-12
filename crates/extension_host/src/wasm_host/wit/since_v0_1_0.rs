@@ -5,6 +5,8 @@ use anyhow::{bail, Context as _, Result};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use extension::{ExtensionLanguageServerProxy, KeyValueStoreDelegate, WorktreeDelegate};
+use latest::zed_extension::lsp::lsp as latest_wit_lsp;
+use self::zed_extension::lsp::lsp as wit_lsp;
 use futures::{io::BufReader, FutureExt as _};
 use futures::{lock::Mutex, AsyncReadExt};
 use gpui::BackgroundExecutor;
@@ -28,19 +30,18 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v0.1.0",
+    path: "../../../zed-extension-wit/wit",
+    world: "zed-extension:extension/extension@0.1.0",
     with: {
          "worktree": ExtensionWorktree,
          "key-value-store": ExtensionKeyValueStore,
-         "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream,
-         "zed:extension/github": latest::zed::extension::github,
-         "zed:extension/nodejs": latest::zed::extension::nodejs,
-         "zed:extension/platform": latest::zed::extension::platform,
-         "zed:extension/slash-command": latest::zed::extension::slash_command,
+         "zed-extension:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream,
+         "zed-extension:github/github@1.0.0": latest::zed_extension::github::github,
+         "zed-extension:nodejs/nodejs@1.0.0": latest::zed_extension::nodejs::nodejs,
+         "zed-extension:platform/platform@1.0.0": latest::zed_extension::platform::platform,
+         "zed-extension:slash-command/slash-command@1.0.0": latest::zed_extension::slash_command::slash_command,
     },
 });
-
-pub use self::zed::extension::*;
 
 mod settings {
     include!(concat!(env!("OUT_DIR"), "/since_v0.1.0/settings.rs"));
@@ -144,51 +145,51 @@ impl From<latest::Completion> for Completion {
     }
 }
 
-impl From<latest::lsp::CompletionKind> for lsp::CompletionKind {
-    fn from(value: latest::lsp::CompletionKind) -> Self {
+impl From<latest_wit_lsp::CompletionKind> for wit_lsp::CompletionKind {
+    fn from(value: latest_wit_lsp::CompletionKind) -> Self {
         match value {
-            latest::lsp::CompletionKind::Text => Self::Text,
-            latest::lsp::CompletionKind::Method => Self::Method,
-            latest::lsp::CompletionKind::Function => Self::Function,
-            latest::lsp::CompletionKind::Constructor => Self::Constructor,
-            latest::lsp::CompletionKind::Field => Self::Field,
-            latest::lsp::CompletionKind::Variable => Self::Variable,
-            latest::lsp::CompletionKind::Class => Self::Class,
-            latest::lsp::CompletionKind::Interface => Self::Interface,
-            latest::lsp::CompletionKind::Module => Self::Module,
-            latest::lsp::CompletionKind::Property => Self::Property,
-            latest::lsp::CompletionKind::Unit => Self::Unit,
-            latest::lsp::CompletionKind::Value => Self::Value,
-            latest::lsp::CompletionKind::Enum => Self::Enum,
-            latest::lsp::CompletionKind::Keyword => Self::Keyword,
-            latest::lsp::CompletionKind::Snippet => Self::Snippet,
-            latest::lsp::CompletionKind::Color => Self::Color,
-            latest::lsp::CompletionKind::File => Self::File,
-            latest::lsp::CompletionKind::Reference => Self::Reference,
-            latest::lsp::CompletionKind::Folder => Self::Folder,
-            latest::lsp::CompletionKind::EnumMember => Self::EnumMember,
-            latest::lsp::CompletionKind::Constant => Self::Constant,
-            latest::lsp::CompletionKind::Struct => Self::Struct,
-            latest::lsp::CompletionKind::Event => Self::Event,
-            latest::lsp::CompletionKind::Operator => Self::Operator,
-            latest::lsp::CompletionKind::TypeParameter => Self::TypeParameter,
-            latest::lsp::CompletionKind::Other(kind) => Self::Other(kind),
+            latest_wit_lsp::CompletionKind::Text => Self::Text,
+            latest_wit_lsp::CompletionKind::Method => Self::Method,
+            latest_wit_lsp::CompletionKind::Function => Self::Function,
+            latest_wit_lsp::CompletionKind::Constructor => Self::Constructor,
+            latest_wit_lsp::CompletionKind::Field => Self::Field,
+            latest_wit_lsp::CompletionKind::Variable => Self::Variable,
+            latest_wit_lsp::CompletionKind::Class => Self::Class,
+            latest_wit_lsp::CompletionKind::Interface => Self::Interface,
+            latest_wit_lsp::CompletionKind::Module => Self::Module,
+            latest_wit_lsp::CompletionKind::Property => Self::Property,
+            latest_wit_lsp::CompletionKind::Unit => Self::Unit,
+            latest_wit_lsp::CompletionKind::Value => Self::Value,
+            latest_wit_lsp::CompletionKind::Enum => Self::Enum,
+            latest_wit_lsp::CompletionKind::Keyword => Self::Keyword,
+            latest_wit_lsp::CompletionKind::Snippet => Self::Snippet,
+            latest_wit_lsp::CompletionKind::Color => Self::Color,
+            latest_wit_lsp::CompletionKind::File => Self::File,
+            latest_wit_lsp::CompletionKind::Reference => Self::Reference,
+            latest_wit_lsp::CompletionKind::Folder => Self::Folder,
+            latest_wit_lsp::CompletionKind::EnumMember => Self::EnumMember,
+            latest_wit_lsp::CompletionKind::Constant => Self::Constant,
+            latest_wit_lsp::CompletionKind::Struct => Self::Struct,
+            latest_wit_lsp::CompletionKind::Event => Self::Event,
+            latest_wit_lsp::CompletionKind::Operator => Self::Operator,
+            latest_wit_lsp::CompletionKind::TypeParameter => Self::TypeParameter,
+            latest_wit_lsp::CompletionKind::Other(kind) => Self::Other(kind),
         }
     }
 }
 
-impl From<latest::lsp::InsertTextFormat> for lsp::InsertTextFormat {
-    fn from(value: latest::lsp::InsertTextFormat) -> Self {
+impl From<latest_wit_lsp::InsertTextFormat> for wit_lsp::InsertTextFormat {
+    fn from(value: latest_wit_lsp::InsertTextFormat) -> Self {
         match value {
-            latest::lsp::InsertTextFormat::PlainText => Self::PlainText,
-            latest::lsp::InsertTextFormat::Snippet => Self::Snippet,
-            latest::lsp::InsertTextFormat::Other(value) => Self::Other(value),
+            latest_wit_lsp::InsertTextFormat::PlainText => Self::PlainText,
+            latest_wit_lsp::InsertTextFormat::Snippet => Self::Snippet,
+            latest_wit_lsp::InsertTextFormat::Other(value) => Self::Other(value),
         }
     }
 }
 
-impl From<latest::lsp::Symbol> for lsp::Symbol {
-    fn from(value: latest::lsp::Symbol) -> Self {
+impl From<latest_wit_lsp::Symbol> for wit_lsp::Symbol {
+    fn from(value: latest_wit_lsp::Symbol) -> Self {
         Self {
             name: value.name,
             kind: value.kind.into(),
@@ -196,36 +197,36 @@ impl From<latest::lsp::Symbol> for lsp::Symbol {
     }
 }
 
-impl From<latest::lsp::SymbolKind> for lsp::SymbolKind {
-    fn from(value: latest::lsp::SymbolKind) -> Self {
+impl From<latest_wit_lsp::SymbolKind> for wit_lsp::SymbolKind {
+    fn from(value: latest_wit_lsp::SymbolKind) -> Self {
         match value {
-            latest::lsp::SymbolKind::File => Self::File,
-            latest::lsp::SymbolKind::Module => Self::Module,
-            latest::lsp::SymbolKind::Namespace => Self::Namespace,
-            latest::lsp::SymbolKind::Package => Self::Package,
-            latest::lsp::SymbolKind::Class => Self::Class,
-            latest::lsp::SymbolKind::Method => Self::Method,
-            latest::lsp::SymbolKind::Property => Self::Property,
-            latest::lsp::SymbolKind::Field => Self::Field,
-            latest::lsp::SymbolKind::Constructor => Self::Constructor,
-            latest::lsp::SymbolKind::Enum => Self::Enum,
-            latest::lsp::SymbolKind::Interface => Self::Interface,
-            latest::lsp::SymbolKind::Function => Self::Function,
-            latest::lsp::SymbolKind::Variable => Self::Variable,
-            latest::lsp::SymbolKind::Constant => Self::Constant,
-            latest::lsp::SymbolKind::String => Self::String,
-            latest::lsp::SymbolKind::Number => Self::Number,
-            latest::lsp::SymbolKind::Boolean => Self::Boolean,
-            latest::lsp::SymbolKind::Array => Self::Array,
-            latest::lsp::SymbolKind::Object => Self::Object,
-            latest::lsp::SymbolKind::Key => Self::Key,
-            latest::lsp::SymbolKind::Null => Self::Null,
-            latest::lsp::SymbolKind::EnumMember => Self::EnumMember,
-            latest::lsp::SymbolKind::Struct => Self::Struct,
-            latest::lsp::SymbolKind::Event => Self::Event,
-            latest::lsp::SymbolKind::Operator => Self::Operator,
-            latest::lsp::SymbolKind::TypeParameter => Self::TypeParameter,
-            latest::lsp::SymbolKind::Other(kind) => Self::Other(kind),
+            latest_wit_lsp::SymbolKind::File => Self::File,
+            latest_wit_lsp::SymbolKind::Module => Self::Module,
+            latest_wit_lsp::SymbolKind::Namespace => Self::Namespace,
+            latest_wit_lsp::SymbolKind::Package => Self::Package,
+            latest_wit_lsp::SymbolKind::Class => Self::Class,
+            latest_wit_lsp::SymbolKind::Method => Self::Method,
+            latest_wit_lsp::SymbolKind::Property => Self::Property,
+            latest_wit_lsp::SymbolKind::Field => Self::Field,
+            latest_wit_lsp::SymbolKind::Constructor => Self::Constructor,
+            latest_wit_lsp::SymbolKind::Enum => Self::Enum,
+            latest_wit_lsp::SymbolKind::Interface => Self::Interface,
+            latest_wit_lsp::SymbolKind::Function => Self::Function,
+            latest_wit_lsp::SymbolKind::Variable => Self::Variable,
+            latest_wit_lsp::SymbolKind::Constant => Self::Constant,
+            latest_wit_lsp::SymbolKind::String => Self::String,
+            latest_wit_lsp::SymbolKind::Number => Self::Number,
+            latest_wit_lsp::SymbolKind::Boolean => Self::Boolean,
+            latest_wit_lsp::SymbolKind::Array => Self::Array,
+            latest_wit_lsp::SymbolKind::Object => Self::Object,
+            latest_wit_lsp::SymbolKind::Key => Self::Key,
+            latest_wit_lsp::SymbolKind::Null => Self::Null,
+            latest_wit_lsp::SymbolKind::EnumMember => Self::EnumMember,
+            latest_wit_lsp::SymbolKind::Struct => Self::Struct,
+            latest_wit_lsp::SymbolKind::Event => Self::Event,
+            latest_wit_lsp::SymbolKind::Operator => Self::Operator,
+            latest_wit_lsp::SymbolKind::TypeParameter => Self::TypeParameter,
+            latest_wit_lsp::SymbolKind::Other(kind) => Self::Other(kind),
         }
     }
 }
@@ -412,7 +413,7 @@ async fn convert_response(
     Ok(extension_response)
 }
 
-impl lsp::Host for WasmState {}
+impl wit_lsp::Host for WasmState {}
 
 impl ExtensionImports for WasmState {
     async fn get_settings(

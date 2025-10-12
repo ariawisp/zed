@@ -1,11 +1,3 @@
-use crate::wasm_host::wit::since_v0_6_0::{
-    dap::{
-        AttachRequest, BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, LaunchRequest,
-        StartDebuggingRequestArguments, TcpArguments, TcpArgumentsTemplate,
-    },
-    slash_command::SlashCommandOutputSection,
-};
-use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
 use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
@@ -42,16 +34,16 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(0, 7, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../../../../../../zed-extension-wit/wit/zed/extension/since_v0.6.0",
+    path: "../../../zed-extension-wit/wit",
+    world: "zed-extension:extension/extension@0.6.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
          "key-value-store": ExtensionKeyValueStore,
-         "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream
+         "zed-extension:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
     },
 });
 
-pub use self::zed::extension::*;
 
 mod settings {
     #![allow(dead_code)]

@@ -16,8 +16,7 @@ use lsp::LanguageServerName;
 use release_channel::ReleaseChannel;
 use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
 
-use crate::wasm_host::wit::since_v1_0_0::dap::StartDebuggingRequestArgumentsRequest;
-
+use crate::wasm_host::wit::since_v1_0_0::StartDebuggingRequestArgumentsRequest;
 use super::{WasmState, wasm_engine};
 use anyhow::{Context as _, Result, anyhow};
 use semantic_version::SemanticVersion;
@@ -31,12 +30,22 @@ use wasmtime::{
 #[cfg(test)]
 pub use latest::CodeLabelSpanLiteral;
 pub use latest::{
-    CodeLabel, CodeLabelSpan, Command, DebugAdapterBinary, ExtensionProject, Range, SlashCommand,
-    zed::extension::context_server::ContextServerConfiguration,
-    zed::extension::lsp::{
-        Completion, CompletionKind, CompletionLabelDetails, InsertTextFormat, Symbol, SymbolKind,
-    },
-    zed::extension::slash_command::{SlashCommandArgumentCompletion, SlashCommandOutput},
+    CodeLabel,
+    CodeLabelSpan,
+    Command,
+    ContextServerConfiguration,
+    DebugAdapterBinary,
+    ExtensionProject,
+    Range,
+    SlashCommand,
+    Completion,
+    CompletionKind,
+    CompletionLabelDetails,
+    InsertTextFormat,
+    SlashCommandArgumentCompletion,
+    SlashCommandOutput,
+    Symbol,
+    SymbolKind,
 };
 pub use since_v0_0_4::LanguageServerConfig;
 

@@ -1,4 +1,4 @@
-use crate::wasm_host::wit::since_v1_0_0::ui as wit_ui;
+use crate::wasm_host::wit::since_v1_0_0::zed_extension::ui::ui as wit_ui;
 use gpui::{div, img, Context as GContext, Div, IntoElement, Render, SharedString, Window};
 use log::{info, warn};
 use once_cell::sync::Lazy;

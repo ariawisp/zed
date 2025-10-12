@@ -53,7 +53,7 @@ wasmtime-wasi.workspace = true
 wasmtime.workspace = true
 workspace-hack.workspace = true
 ui.workspace = true
-wasmtime_runtime = { path = "../../../zipline/wasmtime-host/crates/wasmtime-runtime" }
+wasmtime_runtime = { package = "wasmtime-runtime", path = "../../../zipline/wasmtime-host/crates/wasmtime-runtime" }
 
 [dev-dependencies]
 criterion.workspace = true
