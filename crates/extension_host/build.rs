@@ -1,44 +1,71 @@
-use std::env;
+use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    copy_extension_api_rust_files()
+fn main() -> Result<(), Box<dyn Error>> {
+    stage_wit_definitions()
 }
 
-/// rust-analyzer doesn't support include! for files from outside the crate.
-/// Copy them to the OUT_DIR, so we can include them from there, which is supported.
-fn copy_extension_api_rust_files() -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir = env::var("OUT_DIR")?;
-    let input_dir = PathBuf::from("../../../zed-extension-wit/wit/zed/extension");
-    let output_dir = PathBuf::from(out_dir);
+fn stage_wit_definitions() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+    let default_root = manifest_dir.join("../../../zed-extension-wit/wit");
+    let wit_root = std::env::var("ZED_EXTENSION_WIT_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or(default_root);
 
-    println!("cargo:rerun-if-changed={}", input_dir.display());
+    println!("cargo:rerun-if-env-changed=ZED_EXTENSION_WIT_ROOT");
 
-    for entry in fs::read_dir(&input_dir)? {
+    let wit_root = wit_root.canonicalize().map_err(|_| {
+        format!(
+            "unable to locate WIT definitions at {}",
+            wit_root.display()
+        )
+    })?;
+
+    emit_rerun_if_changed(&wit_root)?;
+
+    let staged_root = manifest_dir.join(".wit");
+    if staged_root.exists() {
+        fs::remove_dir_all(&staged_root)?;
+    }
+    copy_dir_recursive(&wit_root, &staged_root)?;
+
+    Ok(())
+}
+
+fn emit_rerun_if_changed(path: &Path) -> Result<(), Box<dyn Error>> {
+    if path.is_file() {
+        println!("cargo:rerun-if-changed={}", path.display());
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            println!("cargo:rerun-if-changed={}", path.display());
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            emit_rerun_if_changed(&entry_path)?;
+        } else {
+            println!("cargo:rerun-if-changed={}", entry_path.display());
+        }
+    }
 
-            for subentry in fs::read_dir(&path)? {
-                let subentry = subentry?;
-                let subpath = subentry.path();
-                if subpath.extension() == Some(std::ffi::OsStr::new("rs")) {
-                    let relative_path = subpath.strip_prefix(&input_dir)?;
-                    let destination = output_dir.join(relative_path);
+    Ok(())
+}
 
-                    fs::create_dir_all(destination.parent().unwrap())?;
-                    fs::copy(&subpath, &destination)?;
-                }
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let dest_path = dst.join(entry.file_name());
+
+        if entry_path.is_dir() {
+            copy_dir_recursive(&entry_path, &dest_path)?;
+        } else {
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)?;
             }
-        } else if path.extension() == Some(std::ffi::OsStr::new("rs")) {
-            let relative_path = path.strip_prefix(&input_dir)?;
-            let destination = output_dir.join(relative_path);
-
-            fs::create_dir_all(destination.parent().unwrap())?;
-            fs::copy(&path, &destination)?;
-            println!("cargo:rerun-if-changed={}", path.display());
+            fs::copy(&entry_path, &dest_path)?;
         }
     }
 

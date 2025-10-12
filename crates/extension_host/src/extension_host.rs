@@ -66,7 +66,7 @@ use wasm_host::{
 pub use extension::{
     ExtensionLibraryKind, GrammarManifestEntry, OldExtensionManifest, SchemaVersion,
 };
-pub use zed_wasmtime_host::extension_settings::ExtensionSettings;
+pub use crate::extension_settings::ExtensionSettings;
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);

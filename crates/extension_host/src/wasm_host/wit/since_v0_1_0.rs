@@ -30,7 +30,7 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: "../../../zed-extension-wit/wit",
+    path: ".wit",
     world: "zed-extension:extension/extension@0.1.0",
     with: {
          "worktree": ExtensionWorktree,
