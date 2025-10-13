@@ -35,16 +35,20 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(1, 0, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: ".wit",
-    world: "zed-extension:extension/extension@1.0.0",
+    path: ".wit/since.v1.0.0",
+    world: "zed:extension/extension@1.0.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
          "key-value-store": ExtensionKeyValueStore,
-         "zed-extension:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
+         "zed:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
     },
 });
 
+
+pub use self::zed_extension::extension::*;
+
+pub use self::zed_extension::{common, context_server, dap, github, http_client, nodejs, platform, process, slash_command, ui, version};
 
 mod settings {
     #![allow(dead_code)]

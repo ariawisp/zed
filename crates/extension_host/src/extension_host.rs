@@ -2,7 +2,6 @@ mod capability_granter;
 pub mod extension_settings;
 pub mod headless_host;
 pub mod wasm_host;
-pub mod ui;
 
 #[cfg(test)]
 mod extension_store_test;
@@ -66,7 +65,7 @@ use wasm_host::{
 pub use extension::{
     ExtensionLibraryKind, GrammarManifestEntry, OldExtensionManifest, SchemaVersion,
 };
-pub use crate::extension_settings::ExtensionSettings;
+pub use extension_settings::ExtensionSettings;
 
 pub const RELOAD_DEBOUNCE_DURATION: Duration = Duration::from_millis(200);
 const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);

@@ -7,7 +7,6 @@ mod since_v0_3_0;
 mod since_v0_4_0;
 mod since_v0_5_0;
 mod since_v0_6_0;
-mod since_v1_0_0;
 use dap::DebugRequest;
 use extension::{DebugTaskDefinition, KeyValueStoreDelegate, WorktreeDelegate};
 use gpui::BackgroundExecutor;
@@ -16,11 +15,12 @@ use lsp::LanguageServerName;
 use release_channel::ReleaseChannel;
 use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
 
-use crate::wasm_host::wit::since_v1_0_0::StartDebuggingRequestArgumentsRequest;
+use crate::wasm_host::wit::since_v0_6_0::dap::StartDebuggingRequestArgumentsRequest;
+
 use super::{WasmState, wasm_engine};
 use anyhow::{Context as _, Result, anyhow};
 use semantic_version::SemanticVersion;
-use since_v1_0_0 as latest;
+use since_v0_6_0 as latest;
 use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};
 use wasmtime::{
     Store,
@@ -30,22 +30,12 @@ use wasmtime::{
 #[cfg(test)]
 pub use latest::CodeLabelSpanLiteral;
 pub use latest::{
-    CodeLabel,
-    CodeLabelSpan,
-    Command,
-    ContextServerConfiguration,
-    DebugAdapterBinary,
-    ExtensionProject,
-    Range,
-    SlashCommand,
-    Completion,
-    CompletionKind,
-    CompletionLabelDetails,
-    InsertTextFormat,
-    SlashCommandArgumentCompletion,
-    SlashCommandOutput,
-    Symbol,
-    SymbolKind,
+    CodeLabel, CodeLabelSpan, Command, DebugAdapterBinary, ExtensionProject, Range, SlashCommand,
+    zed::extension::context_server::ContextServerConfiguration,
+    zed::extension::lsp::{
+        Completion, CompletionKind, CompletionLabelDetails, InsertTextFormat, Symbol, SymbolKind,
+    },
+    zed::extension::slash_command::{SlashCommandArgumentCompletion, SlashCommandOutput},
 };
 pub use since_v0_0_4::LanguageServerConfig;
 
@@ -108,7 +98,6 @@ pub fn authorize_access_to_unreleased_wasm_api_version(
 }
 
 pub enum Extension {
-    V1_0_0(since_v1_0_0::Extension),
     V0_6_0(since_v0_6_0::Extension),
     V0_5_0(since_v0_5_0::Extension),
     V0_4_0(since_v0_4_0::Extension),
@@ -136,7 +125,7 @@ impl Extension {
                 latest::Extension::instantiate_async(store, component, latest::linker(executor))
                     .await
                     .context("failed to instantiate wasm extension")?;
-            Ok(Self::V1_0_0(extension))
+            Ok(Self::V0_6_0(extension))
         } else if version >= since_v0_5_0::MIN_VERSION {
             let extension = since_v0_5_0::Extension::instantiate_async(
                 store,
@@ -214,7 +203,6 @@ impl Extension {
 
     pub async fn call_init_extension(&self, store: &mut Store<WasmState>) -> Result<()> {
         match self {
-            Extension::V1_0_0(ext) => ext.call_init_extension(store).await,
             Extension::V0_6_0(ext) => ext.call_init_extension(store).await,
             Extension::V0_5_0(ext) => ext.call_init_extension(store).await,
             Extension::V0_4_0(ext) => ext.call_init_extension(store).await,
@@ -235,10 +223,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<Command, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_language_server_command(store, &language_server_id.0, resource)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_language_server_command(store, &language_server_id.0, resource)
                     .await
@@ -301,14 +285,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<Option<String>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_language_server_initialization_options(
-                    store,
-                    &language_server_id.0,
-                    resource,
-                )
-                .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_language_server_initialization_options(
                     store,
@@ -398,14 +374,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<Option<String>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_language_server_workspace_configuration(
-                    store,
-                    &language_server_id.0,
-                    resource,
-                )
-                .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_language_server_workspace_configuration(
                     store,
@@ -474,15 +442,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<Option<String>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_language_server_additional_initialization_options(
-                    store,
-                    &language_server_id.0,
-                    &target_language_server_id.0,
-                    resource,
-                )
-                .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_language_server_additional_initialization_options(
                     store,
@@ -527,15 +486,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<Option<String>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_language_server_additional_workspace_configuration(
-                    store,
-                    &language_server_id.0,
-                    &target_language_server_id.0,
-                    resource,
-                )
-                .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_language_server_additional_workspace_configuration(
                     store,
@@ -579,10 +529,6 @@ impl Extension {
         completions: Vec<latest::Completion>,
     ) -> Result<Result<Vec<Option<CodeLabel>>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_labels_for_completions(store, &language_server_id.0, &completions)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_labels_for_completions(store, &language_server_id.0, &completions)
                     .await
@@ -676,10 +622,6 @@ impl Extension {
         symbols: Vec<latest::Symbol>,
     ) -> Result<Result<Vec<Option<CodeLabel>>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_labels_for_symbols(store, &language_server_id.0, &symbols)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_labels_for_symbols(store, &language_server_id.0, &symbols)
                     .await
@@ -773,10 +715,6 @@ impl Extension {
         arguments: &[String],
     ) -> Result<Result<Vec<SlashCommandArgumentCompletion>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_complete_slash_command_argument(store, command, arguments)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_complete_slash_command_argument(store, command, arguments)
                     .await
@@ -815,10 +753,6 @@ impl Extension {
         resource: Option<Resource<Arc<dyn WorktreeDelegate>>>,
     ) -> Result<Result<SlashCommandOutput, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_run_slash_command(store, command, arguments, resource)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_run_slash_command(store, command, arguments, resource)
                     .await
@@ -856,10 +790,6 @@ impl Extension {
         project: Resource<ExtensionProject>,
     ) -> Result<Result<Command, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_context_server_command(store, &context_server_id, project)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_context_server_command(store, &context_server_id, project)
                     .await
@@ -896,10 +826,6 @@ impl Extension {
         project: Resource<ExtensionProject>,
     ) -> Result<Result<Option<ContextServerConfiguration>, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_context_server_configuration(store, &context_server_id, project)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_context_server_configuration(store, &context_server_id, project)
                     .await
@@ -926,7 +852,6 @@ impl Extension {
         provider: &str,
     ) -> Result<Result<Vec<String>, String>> {
         match self {
-            Extension::V1_0_0(ext) => ext.call_suggest_docs_packages(store, provider).await,
             Extension::V0_6_0(ext) => ext.call_suggest_docs_packages(store, provider).await,
             Extension::V0_5_0(ext) => ext.call_suggest_docs_packages(store, provider).await,
             Extension::V0_4_0(ext) => ext.call_suggest_docs_packages(store, provider).await,
@@ -947,10 +872,6 @@ impl Extension {
         kv_store: Resource<Arc<dyn KeyValueStoreDelegate>>,
     ) -> Result<Result<(), String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                ext.call_index_docs(store, provider, package_name, kv_store)
-                    .await
-            }
             Extension::V0_6_0(ext) => {
                 ext.call_index_docs(store, provider, package_name, kv_store)
                     .await
@@ -989,20 +910,6 @@ impl Extension {
         resource: Resource<Arc<dyn WorktreeDelegate>>,
     ) -> Result<Result<DebugAdapterBinary, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                let dap_binary = ext
-                    .call_get_dap_binary(
-                        store,
-                        &adapter_name,
-                        &task.try_into()?,
-                        user_installed_path.as_ref().and_then(|p| p.to_str()),
-                        resource,
-                    )
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
             Extension::V0_6_0(ext) => {
                 let dap_binary = ext
                     .call_get_dap_binary(
@@ -1027,16 +934,6 @@ impl Extension {
         config: serde_json::Value,
     ) -> Result<Result<StartDebuggingRequestArgumentsRequest, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                let config =
-                    serde_json::to_string(&config).context("Adapter config is not a valid JSON")?;
-                let dap_binary = ext
-                    .call_dap_request_kind(store, &adapter_name, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary))
-            }
             Extension::V0_6_0(ext) => {
                 let config =
                     serde_json::to_string(&config).context("Adapter config is not a valid JSON")?;
@@ -1056,15 +953,6 @@ impl Extension {
         config: ZedDebugConfig,
     ) -> Result<Result<DebugScenario, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                let config = config.into();
-                let dap_binary = ext
-                    .call_dap_config_to_scenario(store, &config)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_binary.try_into()?))
-            }
             Extension::V0_6_0(ext) => {
                 let config = config.into();
                 let dap_binary = ext
@@ -1086,20 +974,6 @@ impl Extension {
         debug_adapter_name: String,
     ) -> Result<Option<DebugScenario>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                let build_config_template = build_config_template.into();
-                let dap_binary = ext
-                    .call_dap_locator_create_scenario(
-                        store,
-                        &locator_name,
-                        &build_config_template,
-                        &resolved_label,
-                        &debug_adapter_name,
-                    )
-                    .await?;
-
-                Ok(dap_binary.map(TryInto::try_into).transpose()?)
-            }
             Extension::V0_6_0(ext) => {
                 let build_config_template = build_config_template.into();
                 let dap_binary = ext
@@ -1124,15 +998,6 @@ impl Extension {
         resolved_build_task: SpawnInTerminal,
     ) -> Result<Result<DebugRequest, String>> {
         match self {
-            Extension::V1_0_0(ext) => {
-                let build_config_template = resolved_build_task.try_into()?;
-                let dap_request = ext
-                    .call_run_dap_locator(store, &locator_name, &build_config_template)
-                    .await?
-                    .map_err(|e| anyhow!("{e:?}"))?;
-
-                Ok(Ok(dap_request.into()))
-            }
             Extension::V0_6_0(ext) => {
                 let build_config_template = resolved_build_task.try_into()?;
                 let dap_request = ext

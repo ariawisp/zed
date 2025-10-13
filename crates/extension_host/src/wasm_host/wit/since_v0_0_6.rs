@@ -12,14 +12,13 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 0, 6);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: ".wit",
-    world: "zed-extension:extension/extension@0.0.6",
+    path: ".wit/since_v0.0.6",
     with: {
          "worktree": ExtensionWorktree,
-         "zed-extension:github/github@1.0.0": latest::zed_extension::github::github,
-         "zed-extension:lsp/lsp@1.0.0": since_v0_1_0::zed_extension::lsp::lsp,
-         "zed-extension:nodejs/nodejs@1.0.0": latest::zed_extension::nodejs::nodejs,
-         "zed-extension:platform/platform@1.0.0": latest::zed_extension::platform::platform,
+         "zed:extension/github": latest::zed::extension::github,
+         "zed:extension/lsp": since_v0_1_0::zed::extension::lsp,
+         "zed:extension/nodejs": latest::zed::extension::nodejs,
+         "zed:extension/platform": latest::zed::extension::platform,
     },
 });
 

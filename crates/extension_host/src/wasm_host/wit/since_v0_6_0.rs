@@ -1,17 +1,25 @@
-use crate::wasm_host::{wit::ToWasmtimeResult, WasmState};
+use crate::wasm_host::wit::since_v0_6_0::{
+    dap::{
+        AttachRequest, BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, LaunchRequest,
+        StartDebuggingRequestArguments, TcpArguments, TcpArgumentsTemplate,
+    },
+    slash_command::SlashCommandOutputSection,
+};
+use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
+use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
 use ::http_client::{AsyncBody, HttpRequestExt};
 use ::settings::{Settings, WorktreeId};
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use extension::{
     ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
 };
-use futures::{io::BufReader, FutureExt as _};
-use futures::{lock::Mutex, AsyncReadExt};
+use futures::{AsyncReadExt, lock::Mutex};
+use futures::{FutureExt as _, io::BufReader};
 use gpui::{BackgroundExecutor, SharedString};
-use language::{language_settings::AllLanguageSettings, BinaryStatus, LanguageName};
+use language::{BinaryStatus, LanguageName, language_settings::AllLanguageSettings};
 use project::project_settings::ProjectSettings;
 use semantic_version::SemanticVersion;
 use std::{
@@ -34,16 +42,16 @@ pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(0, 7, 0);
 wasmtime::component::bindgen!({
     async: true,
     trappable_imports: true,
-    path: ".wit",
-    world: "zed-extension:extension/extension@0.6.0",
+    path: ".wit/since_v0.6.0",
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
          "key-value-store": ExtensionKeyValueStore,
-         "zed-extension:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
+         "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream
     },
 });
 
+pub use self::zed::extension::*;
 
 mod settings {
     #![allow(dead_code)]

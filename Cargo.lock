@@ -5715,6 +5715,7 @@ dependencies = [
  "lsp",
  "moka",
  "node_runtime",
+ "once_cell",
  "parking_lot",
  "paths",
  "project",
@@ -5726,6 +5727,7 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "settings",
+ "smol",
  "task",
  "telemetry",
  "tempfile",
@@ -5736,7 +5738,6 @@ dependencies = [
  "url",
  "wasmparser 0.221.3",
  "wasmtime",
- "wasmtime-runtime",
  "wasmtime-wasi",
  "workspace-hack",
  "zed-collections",
@@ -18022,15 +18023,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29210ec2aa25e00f4d54605cedaf080f39ec01a872c5bd520ad04c67af1dde17"
 dependencies = [
  "libm",
-]
-
-[[package]]
-name = "wasmtime-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "wasmtime",
- "wasmtime-wasi",
 ]
 
 [[package]]
