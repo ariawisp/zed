@@ -1,9 +1,15 @@
 use crate::wasm_host::wit::since_v0_6_0::{
     dap::{
-        AttachRequest, BuildTaskDefinition, BuildTaskDefinitionTemplatePayload, LaunchRequest,
-        StartDebuggingRequestArguments, TcpArguments, TcpArgumentsTemplate,
+        AttachRequest as WitAttachRequest,
+        BuildTaskDefinition as WitBuildTaskDefinition,
+        BuildTaskDefinitionTemplatePayload as WitBuildTaskDefinitionTemplatePayload,
+        LaunchRequest as WitLaunchRequest,
+        StartDebuggingRequestArguments as WitStartDebuggingRequestArguments,
+        StartDebuggingRequestArgumentsRequest as WitStartDebuggingRequestArgumentsRequest,
+        TcpArguments as WitTcpArguments,
+        TcpArgumentsTemplate as WitTcpArgumentsTemplate,
     },
-    slash_command::SlashCommandOutputSection,
+    slash_command::SlashCommandOutputSection as WitSlashCommandOutputSection,
 };
 use crate::wasm_host::wit::{CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind};
 use crate::wasm_host::{WasmState, wit::ToWasmtimeResult};
@@ -40,9 +46,13 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 6, 0);
 pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(0, 7, 0);
 
 wasmtime::component::bindgen!({
-    async: true,
-    trappable_imports: true,
     path: ".wit/since_v0.6.0",
+    imports: {
+        default: async | trappable,
+    },
+    exports: {
+        default: async,
+    },
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
@@ -65,7 +75,7 @@ pub type ExtensionHttpResponseStream = Arc<Mutex<::http_client::Response<AsyncBo
 
 pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
     static LINKER: OnceLock<Linker<WasmState>> = OnceLock::new();
-    LINKER.get_or_init(|| super::new_linker(executor, Extension::add_to_linker))
+    LINKER.get_or_init(|| super::new_linker(executor, |linker| Extension::add_to_linker::<WasmState, WasmState>(linker, super::wasi_view as fn(&mut WasmState) -> &mut WasmState)))
 }
 
 impl From<Range> for std::ops::Range<usize> {
@@ -86,28 +96,28 @@ impl From<Command> for extension::Command {
     }
 }
 
-impl From<StartDebuggingRequestArgumentsRequest>
+impl From<WitStartDebuggingRequestArgumentsRequest>
     for extension::StartDebuggingRequestArgumentsRequest
 {
-    fn from(value: StartDebuggingRequestArgumentsRequest) -> Self {
+    fn from(value: WitStartDebuggingRequestArgumentsRequest) -> Self {
         match value {
-            StartDebuggingRequestArgumentsRequest::Launch => Self::Launch,
-            StartDebuggingRequestArgumentsRequest::Attach => Self::Attach,
+            WitStartDebuggingRequestArgumentsRequest::Launch => Self::Launch,
+            WitStartDebuggingRequestArgumentsRequest::Attach => Self::Attach,
         }
     }
 }
-impl TryFrom<StartDebuggingRequestArguments> for extension::StartDebuggingRequestArguments {
+impl TryFrom<WitStartDebuggingRequestArguments> for extension::StartDebuggingRequestArguments {
     type Error = anyhow::Error;
 
-    fn try_from(value: StartDebuggingRequestArguments) -> Result<Self, Self::Error> {
+    fn try_from(value: WitStartDebuggingRequestArguments) -> Result<Self, Self::Error> {
         Ok(Self {
             configuration: serde_json::from_str(&value.configuration)?,
             request: value.request.into(),
         })
     }
 }
-impl From<TcpArguments> for extension::TcpArguments {
-    fn from(value: TcpArguments) -> Self {
+impl From<WitTcpArguments> for extension::TcpArguments {
+    fn from(value: WitTcpArguments) -> Self {
         Self {
             host: value.host.into(),
             port: value.port,
@@ -116,7 +126,7 @@ impl From<TcpArguments> for extension::TcpArguments {
     }
 }
 
-impl From<extension::TcpArgumentsTemplate> for TcpArgumentsTemplate {
+impl From<extension::TcpArgumentsTemplate> for WitTcpArgumentsTemplate {
     fn from(value: extension::TcpArgumentsTemplate) -> Self {
         Self {
             host: value.host.map(Ipv4Addr::to_bits),
@@ -126,8 +136,8 @@ impl From<extension::TcpArgumentsTemplate> for TcpArgumentsTemplate {
     }
 }
 
-impl From<TcpArgumentsTemplate> for extension::TcpArgumentsTemplate {
-    fn from(value: TcpArgumentsTemplate) -> Self {
+impl From<WitTcpArgumentsTemplate> for extension::TcpArgumentsTemplate {
+    fn from(value: WitTcpArgumentsTemplate) -> Self {
         Self {
             host: value.host.map(Ipv4Addr::from_bits),
             port: value.port,
@@ -166,7 +176,7 @@ impl From<DebugRequest> for task::DebugRequest {
     }
 }
 
-impl From<task::LaunchRequest> for LaunchRequest {
+impl From<task::LaunchRequest> for WitLaunchRequest {
     fn from(value: task::LaunchRequest) -> Self {
         Self {
             program: value.program,
@@ -177,7 +187,7 @@ impl From<task::LaunchRequest> for LaunchRequest {
     }
 }
 
-impl From<task::AttachRequest> for AttachRequest {
+impl From<task::AttachRequest> for WitAttachRequest {
     fn from(value: task::AttachRequest) -> Self {
         Self {
             process_id: value.process_id,
@@ -185,8 +195,8 @@ impl From<task::AttachRequest> for AttachRequest {
     }
 }
 
-impl From<LaunchRequest> for task::LaunchRequest {
-    fn from(value: LaunchRequest) -> Self {
+impl From<WitLaunchRequest> for task::LaunchRequest {
+    fn from(value: WitLaunchRequest) -> Self {
         Self {
             program: value.program,
             cwd: value.cwd.map(|p| p.into()),
@@ -195,8 +205,8 @@ impl From<LaunchRequest> for task::LaunchRequest {
         }
     }
 }
-impl From<AttachRequest> for task::AttachRequest {
-    fn from(value: AttachRequest) -> Self {
+impl From<WitAttachRequest> for task::AttachRequest {
+    fn from(value: WitAttachRequest) -> Self {
         Self {
             process_id: value.process_id,
         }
@@ -227,11 +237,11 @@ impl TryFrom<DebugAdapterBinary> for extension::DebugAdapterBinary {
     }
 }
 
-impl From<BuildTaskDefinition> for extension::BuildTaskDefinition {
-    fn from(value: BuildTaskDefinition) -> Self {
+impl From<WitBuildTaskDefinition> for extension::BuildTaskDefinition {
+    fn from(value: WitBuildTaskDefinition) -> Self {
         match value {
-            BuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
-            BuildTaskDefinition::Template(build_task_template) => Self::Template {
+            WitBuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
+            WitBuildTaskDefinition::Template(build_task_template) => Self::Template {
                 task_template: build_task_template.template.into(),
                 locator_name: build_task_template.locator_name.map(SharedString::from),
             },
@@ -239,14 +249,14 @@ impl From<BuildTaskDefinition> for extension::BuildTaskDefinition {
     }
 }
 
-impl From<extension::BuildTaskDefinition> for BuildTaskDefinition {
+impl From<extension::BuildTaskDefinition> for WitBuildTaskDefinition {
     fn from(value: extension::BuildTaskDefinition) -> Self {
         match value {
             extension::BuildTaskDefinition::ByName(name) => Self::ByName(name.into()),
             extension::BuildTaskDefinition::Template {
                 task_template,
                 locator_name,
-            } => Self::Template(BuildTaskDefinitionTemplatePayload {
+            } => Self::Template(WitBuildTaskDefinitionTemplatePayload {
                 template: task_template.into(),
                 locator_name: locator_name.map(String::from),
             }),
@@ -479,8 +489,8 @@ impl From<SlashCommandOutput> for extension::SlashCommandOutput {
     }
 }
 
-impl From<SlashCommandOutputSection> for extension::SlashCommandOutputSection {
-    fn from(value: SlashCommandOutputSection) -> Self {
+impl From<WitSlashCommandOutputSection> for extension::SlashCommandOutputSection {
+    fn from(value: WitSlashCommandOutputSection) -> Self {
         Self {
             range: value.range.start as usize..value.range.end as usize,
             label: value.label,
@@ -886,8 +896,8 @@ impl context_server::Host for WasmState {}
 impl dap::Host for WasmState {
     async fn resolve_tcp_template(
         &mut self,
-        template: TcpArgumentsTemplate,
-    ) -> wasmtime::Result<Result<TcpArguments, String>> {
+        template: WitTcpArgumentsTemplate,
+    ) -> wasmtime::Result<Result<WitTcpArguments, String>> {
         maybe!(async {
             let (host, port, timeout) =
                 ::dap::configure_tcp_connection(task::TcpArgumentsTemplate {
@@ -896,7 +906,7 @@ impl dap::Host for WasmState {
                     timeout: template.timeout,
                 })
                 .await?;
-            Ok(TcpArguments {
+            Ok(WitTcpArguments {
                 port,
                 host: host.to_bits(),
                 timeout,

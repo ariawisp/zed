@@ -33,33 +33,35 @@ pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(1, 0, 0);
 pub const MAX_VERSION: SemanticVersion = SemanticVersion::new(1, 0, 0);
 
 wasmtime::component::bindgen!({
-    async: true,
-    trappable_imports: true,
-    path: ".wit/since.v1.0.0",
-    world: "zed:extension/extension@1.0.0",
+    path: ".wit/since_v1.0.0",
+    imports: {
+        default: async | trappable,
+    },
+    exports: {
+        default: async,
+    },
     with: {
          "worktree": ExtensionWorktree,
          "project": ExtensionProject,
          "key-value-store": ExtensionKeyValueStore,
-         "zed:http-client/http-client@1.0.0/http-response-stream": ExtensionHttpResponseStream
+         "zed:extension/http-client/http-response-stream": ExtensionHttpResponseStream
     },
 });
 
+pub use self::zed::extension::*;
 
-pub use self::zed_extension::extension::*;
-
-pub use self::zed_extension::{common, context_server, dap, github, http_client, nodejs, platform, process, slash_command, ui, version};
+pub use self::zed::extension::{
+    common, context_server, dap, github, http_client, nodejs, platform, process, slash_command, ui,
+    version,
+};
 
 mod settings {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/since_v1.0.0/settings.rs"));
 }
 
-pub use self::zed_extension::lsp::lsp::{
-    CompletionKind,
-    CompletionLabelDetails,
-    InsertTextFormat,
-    SymbolKind,
+pub use self::zed::extension::lsp::{
+    CompletionKind, CompletionLabelDetails, InsertTextFormat, SymbolKind,
 };
 
 pub type ExtensionWorktree = Arc<dyn WorktreeDelegate>;
@@ -69,7 +71,7 @@ pub type ExtensionHttpResponseStream = Arc<Mutex<::http_client::Response<AsyncBo
 
 pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
     static LINKER: OnceLock<Linker<WasmState>> = OnceLock::new();
-    LINKER.get_or_init(|| super::new_linker(executor, Extension::add_to_linker))
+    LINKER.get_or_init(|| super::new_linker(executor, |linker| Extension::add_to_linker::<WasmState, WasmState>(linker, super::wasi_view as fn(&mut WasmState) -> &mut WasmState)))
 }
 
 impl From<Range> for std::ops::Range<usize> {

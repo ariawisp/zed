@@ -41,11 +41,11 @@ pub use since_v0_0_4::LanguageServerConfig;
 
 pub fn new_linker(
     executor: &BackgroundExecutor,
-    f: impl Fn(&mut Linker<WasmState>, fn(&mut WasmState) -> &mut WasmState) -> Result<()>,
+    f: impl Fn(&mut Linker<WasmState>) -> Result<()>,
 ) -> Linker<WasmState> {
     let mut linker = Linker::new(&wasm_engine(executor));
-    wasmtime_wasi::add_to_linker_async(&mut linker).unwrap();
-    f(&mut linker, wasi_view).unwrap();
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    f(&mut linker).unwrap();
     linker
 }
 

@@ -26,9 +26,13 @@ use super::latest;
 pub const MIN_VERSION: SemanticVersion = SemanticVersion::new(0, 1, 0);
 
 wasmtime::component::bindgen!({
-    async: true,
-    trappable_imports: true,
     path: ".wit/since_v0.1.0",
+    imports: {
+        default: async | trappable,
+    },
+    exports: {
+        default: async,
+    },
     with: {
          "worktree": ExtensionWorktree,
          "key-value-store": ExtensionKeyValueStore,
@@ -52,7 +56,7 @@ pub type ExtensionHttpResponseStream = Arc<Mutex<::http_client::Response<AsyncBo
 
 pub fn linker(executor: &BackgroundExecutor) -> &'static Linker<WasmState> {
     static LINKER: OnceLock<Linker<WasmState>> = OnceLock::new();
-    LINKER.get_or_init(|| super::new_linker(executor, Extension::add_to_linker))
+    LINKER.get_or_init(|| super::new_linker(executor, |linker| Extension::add_to_linker::<WasmState, WasmState>(linker, super::wasi_view as fn(&mut WasmState) -> &mut WasmState)))
 }
 
 impl From<Command> for latest::Command {
