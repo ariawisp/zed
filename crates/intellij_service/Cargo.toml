@@ -1,0 +1,9 @@
+[package]
+name = "intellij_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+lsp-types = { git = "https://github.com/zed-industries/lsp-types", rev = "0874f8742fe55b4dc94308c1e3c0069710d8eeaf" }
+zed_intellij_bridge = { path = "../../../icarus/zed_intellij_bridge" }

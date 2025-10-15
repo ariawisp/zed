@@ -5959,6 +5959,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
+name = "flatbuffers"
+version = "25.9.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09b6620799e7340ebd9968d2e0708eb82cf1971e9a16821e2091b6d6e475eed5"
+dependencies = [
+ "bitflags 2.9.0",
+ "rustc_version",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8058,6 +8068,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "intellij_service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lsp-types",
+ "zed_intellij_bridge",
 ]
 
 [[package]]
@@ -20457,6 +20476,15 @@ name = "zed_html"
 version = "0.2.3"
 dependencies = [
  "zed_extension_api 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "zed_intellij_bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "flatbuffers",
 ]
 
 [[package]]

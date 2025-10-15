@@ -90,6 +90,7 @@ members = [
     "crates/image_viewer",
     "crates/inspector_ui",
     "crates/install_cli",
+    "crates/intellij_service",
     "crates/journal",
     "crates/json_schema_store",
     "crates/keymap_editor",
