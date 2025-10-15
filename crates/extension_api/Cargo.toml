@@ -22,3 +22,6 @@ wit-bindgen = "0.46"
 
 [package.metadata.component]
 target = { path = "wit" }
+
+[patch.crates-io]
+wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen.git", rev = "3a2114dd74544b0c71d99fb0e97d2edb56d0a5a6" }

@@ -1376,7 +1376,9 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tungstenite 0.27.0",
 ]
 
@@ -3094,7 +3096,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-tungstenite 0.29.1",
+ "async-tungstenite 0.31.0",
  "base64 0.22.1",
  "chrono",
  "clock",
@@ -3309,7 +3311,7 @@ dependencies = [
  "assistant_context",
  "assistant_slash_command",
  "async-trait",
- "async-tungstenite 0.29.1",
+ "async-tungstenite 0.31.0",
  "audio",
  "aws-config",
  "aws-sdk-kinesis",
@@ -13531,7 +13533,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-dispatcher",
- "async-tungstenite 0.29.1",
+ "async-tungstenite 0.31.0",
  "base64 0.22.1",
  "client",
  "command_palette_hooks",
@@ -13830,7 +13832,7 @@ name = "rpc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-tungstenite 0.29.1",
+ "async-tungstenite 0.31.0",
  "base64 0.22.1",
  "chrono",
  "futures 0.3.31",
@@ -17627,6 +17629,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.2",
+ "rustls 0.23.32",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.17",
  "utf-8",
