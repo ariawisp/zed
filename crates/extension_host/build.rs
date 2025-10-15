@@ -41,6 +41,7 @@ fn stage_wit_definitions() -> Result<(), Box<dyn Error>> {
     let wit_root = std::env::var("ZED_EXTENSION_WIT_ROOT")
         .map(PathBuf::from)
         .unwrap_or(default_root);
+    let out_root = PathBuf::from(std::env::var("OUT_DIR")?);
 
     println!("cargo:rerun-if-env-changed=ZED_EXTENSION_WIT_ROOT");
 
@@ -60,15 +61,22 @@ fn stage_wit_definitions() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&staged_root)?;
 
     for version in VERSIONS {
-        generate_version(&wit_root, &staged_root, version)?;
+        generate_version(&wit_root, &staged_root, &out_root, version)?;
     }
 
     Ok(())
 }
 
-fn generate_version(wit_root: &Path, staged_root: &Path, version: &str) -> Result<(), Box<dyn Error>> {
+fn generate_version(
+    wit_root: &Path,
+    staged_root: &Path,
+    out_root: &Path,
+    version: &str,
+) -> Result<(), Box<dyn Error>> {
     let dest_dir = staged_root.join(version);
     fs::create_dir_all(&dest_dir)?;
+    let out_dir = out_root.join(version);
+    fs::create_dir_all(&out_dir)?;
 
     let extension_src = wit_root
         .join("zed/extension")
@@ -82,6 +90,7 @@ fn generate_version(wit_root: &Path, staged_root: &Path, version: &str) -> Resul
         .join("settings.rs");
     if settings_src.exists() {
         fs::copy(&settings_src, dest_dir.join("settings.rs"))?;
+        fs::copy(&settings_src, out_dir.join("settings.rs"))?;
     }
 
     for (dest, src) in BASE_MODULES {

@@ -40,6 +40,8 @@ struct GlobalAcpConnectionRegistry(Entity<AcpConnectionRegistry>);
 
 impl Global for GlobalAcpConnectionRegistry {}
 
+type RequestIdKey = String;
+
 #[derive(Default)]
 pub struct AcpConnectionRegistry {
     active_connection: RefCell<Option<ActiveConnection>>,
@@ -89,8 +91,8 @@ struct WatchedConnection {
     messages: Vec<WatchedConnectionMessage>,
     list_state: ListState,
     connection: Weak<acp::ClientSideConnection>,
-    incoming_request_methods: HashMap<i32, Arc<str>>,
-    outgoing_request_methods: HashMap<i32, Arc<str>>,
+    incoming_request_methods: HashMap<RequestIdKey, Arc<str>>,
+    outgoing_request_methods: HashMap<RequestIdKey, Arc<str>>,
     _task: Task<()>,
 }
 
@@ -171,8 +173,9 @@ impl AcpTools {
                     }
                 };
 
-                method_map.insert(id, method.clone());
-                (Some(id), method.into(), MessageType::Request, Ok(params))
+                let (id_key, id_display) = request_id_key_and_display(&id);
+                method_map.insert(id_key, method.clone());
+                (Some(id_display), method.into(), MessageType::Request, Ok(params))
             }
             acp::StreamMessageContent::Response { id, result } => {
                 let method_map = match stream_message.direction {
@@ -184,16 +187,12 @@ impl AcpTools {
                     }
                 };
 
-                if let Some(method) = method_map.remove(&id) {
-                    (Some(id), method.into(), MessageType::Response, result)
-                } else {
-                    (
-                        Some(id),
-                        "[unrecognized response]".into(),
-                        MessageType::Response,
-                        result,
-                    )
-                }
+                let (id_key, id_display) = request_id_key_and_display(&id);
+                let method = method_map
+                    .remove(&id_key)
+                    .map(|method| method.into())
+                    .unwrap_or_else(|| "[unrecognized response]".into());
+                (Some(id_display), method, MessageType::Response, result)
             }
             acp::StreamMessageContent::Notification { method, params } => {
                 (None, method.into(), MessageType::Notification, Ok(params))
@@ -306,7 +305,8 @@ impl AcpTools {
                     .children(
                         message
                             .request_id
-                            .map(|req_id| div().child(ui::Chip::new(req_id.to_string()))),
+                            .clone()
+                            .map(|req_id| div().child(ui::Chip::new(req_id))),
                     ),
             )
             // I'm aware using markdown is a hack. Trying to get something working for the demo.
@@ -357,7 +357,7 @@ impl AcpTools {
 
 struct WatchedConnectionMessage {
     name: SharedString,
-    request_id: Option<i32>,
+    request_id: Option<SharedString>,
     direction: acp::StreamMessageDirection,
     message_type: MessageType,
     params: Result<Option<serde_json::Value>, acp::Error>,
@@ -412,6 +412,24 @@ fn expanded_params_md(
     let params_json = serde_json::to_string_pretty(params).unwrap_or_default();
     let params_md = format!("```json\n{}\n```", params_json);
     cx.new(|cx| Markdown::new(params_md.into(), Some(language_registry.clone()), None, cx))
+}
+
+fn request_id_key_and_display(id: &impl serde::Serialize) -> (RequestIdKey, SharedString) {
+    match serde_json::to_value(id).ok() {
+        Some(serde_json::Value::Null) => ("null".to_string(), "null".into()),
+        Some(serde_json::Value::Number(number)) => {
+            let text = number.to_string();
+            (format!("num:{text}"), text.into())
+        }
+        Some(serde_json::Value::String(text)) => {
+            (format!("str:{text}"), text.into())
+        }
+        Some(other) => {
+            let text = other.to_string();
+            (format!("other:{text}"), text.into())
+        }
+        None => ("invalid".to_string(), "invalid".into()),
+    }
 }
 
 enum MessageType {

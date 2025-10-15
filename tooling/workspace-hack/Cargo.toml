@@ -280,9 +280,6 @@ unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 wasmparser = { version = "0.221" }
-wasmtime = { version = "37.0.2", default-features = false, features = ["async", "component-model", "component-model-async", "cranelift", "demangle", "gc-drc", "incremental-cache", "parallel-compilation"] }
-wasmtime-internal-cranelift = { version = "37.0.2", default-features = false, features = ["component-model", "gc-drc", "incremental-cache"] }
-wasmtime-environ = { version = "37.0.2", default-features = false, features = ["compile", "component-model", "demangle", "gc-drc"] }
 
 [target.x86_64-apple-darwin.dependencies]
 codespan-reporting = { version = "0.12" }
