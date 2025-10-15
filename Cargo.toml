@@ -703,9 +703,9 @@ url = "2.2"
 urlencoding = "2.1.2"
 uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde"] }
 walkdir = "2.5"
-wasm-encoder = "0.221"
-wasmparser = "0.221"
-wasmtime = { version = "37.0.2", default-features = false, features = [
+wasm-encoder = "0.240.0"
+wasmparser = "0.240.0"
+wasmtime = { version = "39.0.0", default-features = false, features = [
     "async",
     "demangle",
     "runtime",
@@ -715,10 +715,10 @@ wasmtime = { version = "37.0.2", default-features = false, features = [
     "incremental-cache",
     "parallel-compilation",
 ] }
-wasmtime-wasi = "37.0.2"
+wasmtime-wasi = "39.0.0"
 which = "6.0.0"
 windows-core = "0.61"
-wit-component = "0.221"
+wit-component = "0.240.0"
 workspace-hack = "0.1.0"
 yawc = "0.2.5"
 zeroize = "1.8"
@@ -782,6 +782,21 @@ notify = { git = "https://github.com/zed-industries/notify.git", rev = "bbb9ea5a
 notify-types = { git = "https://github.com/zed-industries/notify.git", rev = "bbb9ea5ae52b253e095737847e367c30653a2e96" }
 windows-capture = { git = "https://github.com/zed-industries/windows-capture.git", rev = "f0d6c1b6691db75461b732f6d5ff56eed002eeb9" }
 zed_extension_api = { path = "crates/extension_api" }
+wasmtime = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-environ = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-cranelift = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-wit-bindgen = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-fiber = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-jit-debug = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-jit-icache-coherence = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-math = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-slab = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-unwinder = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-versioned-export-macros = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-component-macro = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-component-util = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
+wasmtime-internal-winch = { git = "https://github.com/bytecodealliance/wasmtime.git", rev = "021552326344322330c471a832dbbce5ced990cc" }
 
 # Makes the workspace hack crate refer to the local one, but only when you're building locally
 workspace-hack = { path = "tooling/workspace-hack" }
