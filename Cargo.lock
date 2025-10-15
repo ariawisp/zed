@@ -5237,9 +5237,9 @@ dependencies = [
 
 [[package]]
 name = "dyn-stack-macros"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05dbec7076f432bb132db738df90d87a4f5789e99f59e7b1219a6b8ef61eaa68"
+checksum = "00140340c29b813fdf6ff2237c4407405baefc72cacbe8f1e2277a75b90e5d30"
 
 [[package]]
 name = "ec4rs"
