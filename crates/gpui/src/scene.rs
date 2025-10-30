@@ -448,7 +448,7 @@ pub(crate) enum PrimitiveBatch<'a> {
     Surfaces(&'a [PaintSurface]),
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub(crate) struct Quad {
     pub order: DrawOrder,
@@ -459,6 +459,23 @@ pub(crate) struct Quad {
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
+    pub transformation: TransformationMatrix,
+}
+
+impl Default for Quad {
+    fn default() -> Self {
+        Self {
+            order: DrawOrder::default(),
+            border_style: BorderStyle::default(),
+            bounds: Bounds::default(),
+            content_mask: ContentMask::default(),
+            background: Background::default(),
+            border_color: Hsla::default(),
+            corner_radii: Corners::default(),
+            border_widths: Edges::default(),
+            transformation: TransformationMatrix::unit(),
+        }
+    }
 }
 
 impl From<Quad> for Primitive {
@@ -514,7 +531,7 @@ pub enum BorderStyle {
 }
 
 /// A data type representing a 2 dimensional transformation that can be applied to an element.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[repr(C)]
 pub struct TransformationMatrix {
     /// 2x2 matrix containing rotation and scale,

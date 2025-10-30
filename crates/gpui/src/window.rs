@@ -851,6 +851,7 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
+    pub(crate) transformation_stack: Vec<crate::TransformationMatrix>,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
@@ -1237,6 +1238,7 @@ impl Window {
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            transformation_stack: Vec::new(),
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
@@ -2468,6 +2470,23 @@ impl Window {
         result
     }
 
+    pub(crate) fn with_transformation<R>(
+        &mut self,
+        transformation: Option<crate::TransformationMatrix>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+
+        let Some(transformation) = transformation else {
+            return f(self);
+        };
+
+        self.transformation_stack.push(transformation);
+        let result = f(self);
+        self.transformation_stack.pop();
+        result
+    }
+
     /// Perform prepaint on child elements in a "retryable" manner, so that any side effects
     /// of prepaints can be discarded before prepainting again. This is used to support autoscroll
     /// where we need to prepaint children to detect the autoscroll bounds, then adjust the
@@ -2565,6 +2584,11 @@ impl Window {
     pub(crate) fn element_opacity(&self) -> f32 {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.element_opacity
+    }
+
+    pub(crate) fn current_transformation(&self) -> Option<crate::TransformationMatrix> {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        self.transformation_stack.last().copied()
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
@@ -2860,6 +2884,7 @@ impl Window {
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
         let opacity = self.element_opacity();
+        let transformation = self.current_transformation();
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
             bounds: quad.bounds.scale(scale_factor),
@@ -2869,6 +2894,7 @@ impl Window {
             corner_radii: quad.corner_radii.scale(scale_factor),
             border_widths: quad.border_widths.scale(scale_factor),
             border_style: quad.border_style,
+            transformation: transformation.unwrap_or_else(crate::TransformationMatrix::unit),
         });
     }
 

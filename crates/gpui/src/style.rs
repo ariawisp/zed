@@ -260,6 +260,9 @@ pub struct Style {
     /// The opacity of this element
     pub opacity: Option<f32>,
 
+    /// The transformation matrix to apply to this element
+    pub transform: Option<crate::TransformationMatrix>,
+
     /// The grid columns of this element
     /// Equivalent to the Tailwind `grid-cols-<number>`
     pub grid_cols: Option<u16>,
@@ -626,34 +629,35 @@ impl Style {
 
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
-        let background_color = self.background.as_ref().and_then(Fill::color);
-        if background_color.is_some_and(|color| !color.is_transparent()) {
-            let mut border_color = match background_color {
-                Some(color) => match color.tag {
-                    BackgroundTag::Solid => color.solid,
-                    BackgroundTag::LinearGradient => color
-                        .colors
-                        .first()
-                        .map(|stop| stop.color)
-                        .unwrap_or_default(),
-                    BackgroundTag::PatternSlash => color.solid,
-                },
-                None => Hsla::default(),
-            };
-            border_color.a = 0.;
-            window.paint_quad(quad(
-                bounds,
-                corner_radii,
-                background_color.unwrap_or_default(),
-                Edges::default(),
-                border_color,
-                self.border_style,
-            ));
-        }
+        window.with_transformation(self.transform, |window| {
+            let background_color = self.background.as_ref().and_then(Fill::color);
+            if background_color.is_some_and(|color| !color.is_transparent()) {
+                let mut border_color = match background_color {
+                    Some(color) => match color.tag {
+                        BackgroundTag::Solid => color.solid,
+                        BackgroundTag::LinearGradient => color
+                            .colors
+                            .first()
+                            .map(|stop| stop.color)
+                            .unwrap_or_default(),
+                        BackgroundTag::PatternSlash => color.solid,
+                    },
+                    None => Hsla::default(),
+                };
+                border_color.a = 0.;
+                window.paint_quad(quad(
+                    bounds,
+                    corner_radii,
+                    background_color.unwrap_or_default(),
+                    Edges::default(),
+                    border_color,
+                    self.border_style,
+                ));
+            }
 
-        continuation(window, cx);
+            continuation(window, cx);
 
-        if self.is_border_visible() {
+            if self.is_border_visible() {
             let border_widths = self.border_widths.to_pixels(rem_size);
             let max_border_width = border_widths.max();
             let max_corner_radius = corner_radii.max();
@@ -713,7 +717,8 @@ impl Style {
                     window.paint_quad(quad);
                 },
             );
-        }
+            }
+        });
 
         #[cfg(debug_assertions)]
         if self.debug_below {
@@ -769,6 +774,7 @@ impl Default for Style {
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,
+            transform: None,
             grid_rows: None,
             grid_cols: None,
             grid_location: None,
