@@ -29,6 +29,7 @@ mod key_dispatch;
 mod keymap;
 mod path_builder;
 mod platform;
+mod ffi;
 pub mod prelude;
 mod scene;
 mod shared_string;

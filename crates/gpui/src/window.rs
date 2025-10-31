@@ -1928,6 +1928,8 @@ impl Window {
 
     fn complete_frame(&self) {
         self.platform_window.completed_frame();
+        // Notify host via C FFI that a frame has completed.
+        crate::ffi::notify_frame_clock_now();
     }
 
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
