@@ -35,6 +35,7 @@ mod shared_string;
 mod shared_uri;
 mod style;
 mod styled;
+pub mod retained;
 mod subscription;
 mod svg_renderer;
 mod tab_stop;
