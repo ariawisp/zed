@@ -29,6 +29,8 @@ mod key_dispatch;
 mod keymap;
 mod path_builder;
 mod platform;
+/// Environment: locale and window metrics access and subscriptions.
+pub mod environment;
 mod ffi;
 pub mod prelude;
 mod scene;

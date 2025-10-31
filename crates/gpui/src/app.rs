@@ -668,6 +668,11 @@ impl App {
 
         init_app_menus(platform.as_ref(), &app.borrow());
         SystemWindowTabController::init(&mut app.borrow_mut());
+        // Initialize environment global state (locale, window metrics cache)
+        {
+            let cx = &mut *app.borrow_mut();
+            crate::environment::init(cx);
+        }
 
         platform.on_keyboard_layout_change(Box::new({
             let app = Rc::downgrade(&app);

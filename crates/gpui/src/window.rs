@@ -1692,6 +1692,17 @@ impl Window {
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
 
+        // Update global window metrics cache and notify observers.
+        crate::environment::set_window_metrics(
+            cx,
+            crate::environment::WindowMetrics {
+                width: self.viewport_size.width.0,
+                height: self.viewport_size.height.0,
+                scale: self.scale_factor,
+                font_scale: 1.0,
+            },
+        );
+
         self.refresh();
 
         self.bounds_observers
