@@ -905,35 +905,41 @@ fn render_switch(node: &NodeView) -> Stateful<Div> {
     let max_x = bg_width - bar_width - inset * 2.;
     let toggle_x = if checked { max_x } else { px(0.) };
 
-    let mut container = div().id(("rn", node.id));
-    container = apply_layout_and_style(container, node);
+    // The switch container itself is the background bar
+    let mut switch_bar = div()
+        .id(("rn", node.id))
+        .w(bg_width)
+        .h(bg_height)
+        .rounded(bg_height) // Fully rounded
+        .flex()
+        .items_center()
+        .border(inset)
+        .border_color(crate::transparent_black())
+        .bg(rgba(bg_color))
+        .child(
+            // Switch toggle circle
+            div()
+                .rounded(bg_height)
+                .bg(rgba(toggle_color))
+                .size(bar_width)
+                .left(toggle_x),
+        );
 
-    container.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .child(
-                // Switch background bar
-                div()
-                    .w(bg_width)
-                    .h(bg_height)
-                    .rounded(bg_height) // Fully rounded
-                    .flex()
-                    .items_center()
-                    .border(inset)
-                    .border_color(crate::transparent_black())
-                    .bg(rgba(bg_color))
-                    .child(
-                        // Switch toggle circle
-                        div()
-                            .rounded(bg_height)
-                            .bg(rgba(toggle_color))
-                            .size(bar_width)
-                            .left(toggle_x),
-                    ),
-            ),
-    )
+    // Apply layout/style from React Native (position, margins, etc - not size since we set it)
+    // Only apply position/transform, not size
+    if let Some(l) = &node.layout {
+        if !matches!(node.kind, NodeKind::RootView) {
+            switch_bar = switch_bar.absolute().left(px(l.x)).top(px(l.y));
+            if let Some(tr) = node.transform.as_ref() {
+                switch_bar = apply_transform(switch_bar, tr);
+            }
+        }
+    }
+    if let Some(op) = node.opacity {
+        switch_bar = switch_bar.opacity(op);
+    }
+
+    switch_bar
 }
 
 fn render_textinput(node: &NodeView) -> Stateful<Div> {
