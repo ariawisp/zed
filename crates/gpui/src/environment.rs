@@ -2,8 +2,8 @@
 //! Provides cached getters and subscriptions for changes that
 //! downstream crates can use (e.g., react-native-gpui turbomodules).
 
-use crate::{App, Global, Subscription};
 use crate::subscription::SubscriberSet;
+use crate::{App, Global, Subscription};
 use once_cell::sync::Lazy;
 use std::sync::RwLock;
 
@@ -44,8 +44,15 @@ impl Global for EnvironmentState {}
 pub fn init(cx: &mut App) {
     // Set defaults only once.
     if cx.try_global::<EnvironmentState>().is_none() {
-        let locale = LocaleInfo { identifier: query_system_locale() };
-        let metrics = WindowMetrics { width: 0.0, height: 0.0, scale: 1.0, font_scale: 1.0 };
+        let locale = LocaleInfo {
+            identifier: query_system_locale(),
+        };
+        let metrics = WindowMetrics {
+            width: 0.0,
+            height: 0.0,
+            scale: 1.0,
+            font_scale: 1.0,
+        };
         let state = EnvironmentState {
             locale,
             window_metrics: metrics,
@@ -84,13 +91,10 @@ pub fn set_locale(cx: &mut App, new_locale: LocaleInfo) {
             let mut l = CACHED_LOCALE.write().unwrap();
             *l = Some(state.locale.clone());
         }
-        state
-            .locale_observers
-            .clone()
-            .retain(&(), |callback| {
-                (callback)(cx);
-                true
-            });
+        state.locale_observers.clone().retain(&(), |callback| {
+            (callback)(cx);
+            true
+        });
     }
 }
 
@@ -133,9 +137,12 @@ where
     F: 'static + FnMut(&mut App),
 {
     let state = cx.global::<EnvironmentState>();
-    let (subscription, activate) = state.locale_observers.insert((), Box::new(move |cx| {
-        callback(cx);
-    }));
+    let (subscription, activate) = state.locale_observers.insert(
+        (),
+        Box::new(move |cx| {
+            callback(cx);
+        }),
+    );
     activate();
     subscription
 }
@@ -146,11 +153,12 @@ where
     F: 'static + FnMut(&mut App),
 {
     let state = cx.global::<EnvironmentState>();
-    let (subscription, activate) = state
-        .window_metrics_observers
-        .insert((), Box::new(move |cx| {
+    let (subscription, activate) = state.window_metrics_observers.insert(
+        (),
+        Box::new(move |cx| {
             callback(cx);
-        }));
+        }),
+    );
     activate();
     subscription
 }
@@ -169,10 +177,11 @@ fn query_system_locale() -> String {
 fn query_system_locale() -> String {
     use core_foundation::array::CFArray;
     use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;    
+    use core_foundation::string::CFString;
     use core_foundation_sys::locale::CFLocaleCopyPreferredLanguages;
     unsafe {
-        let arr: CFArray<CFString> = CFArray::wrap_under_create_rule(CFLocaleCopyPreferredLanguages());
+        let arr: CFArray<CFString> =
+            CFArray::wrap_under_create_rule(CFLocaleCopyPreferredLanguages());
         if let Some(first) = arr.get(0) {
             first.to_string()
         } else {
@@ -183,8 +192,8 @@ fn query_system_locale() -> String {
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn query_system_locale() -> String {
-    use std::ffi::OsString;
     use std::env;
+    use std::ffi::OsString;
     if let Some(locale) = env::var_os("LC_ALL").or_else(|| env::var_os("LC_CTYPE")) {
         locale.to_string_lossy().to_string()
     } else {

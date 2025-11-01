@@ -666,21 +666,30 @@ pub trait Styled: Sized {
     /// Rotates this element by the given angle
     fn rotate(mut self, angle: impl Into<crate::Radians>) -> Self {
         let angle = angle.into();
-        let current = self.style().transform.unwrap_or_else(crate::TransformationMatrix::unit);
+        let current = self
+            .style()
+            .transform
+            .unwrap_or_else(crate::TransformationMatrix::unit);
         self.style().transform = Some(current.rotate(angle));
         self
     }
 
     /// Scales this element uniformly by the given factor
     fn scale(mut self, factor: f32) -> Self {
-        let current = self.style().transform.unwrap_or_else(crate::TransformationMatrix::unit);
+        let current = self
+            .style()
+            .transform
+            .unwrap_or_else(crate::TransformationMatrix::unit);
         self.style().transform = Some(current.scale(crate::size(factor, factor)));
         self
     }
 
     /// Scales this element by the given x and y factors
     fn scale_xy(mut self, x: f32, y: f32) -> Self {
-        let current = self.style().transform.unwrap_or_else(crate::TransformationMatrix::unit);
+        let current = self
+            .style()
+            .transform
+            .unwrap_or_else(crate::TransformationMatrix::unit);
         self.style().transform = Some(current.scale(crate::size(x, y)));
         self
     }
@@ -689,11 +698,14 @@ pub trait Styled: Sized {
     fn translate(mut self, x: impl Into<crate::Pixels>, y: impl Into<crate::Pixels>) -> Self {
         let x = x.into();
         let y = y.into();
-        let current = self.style().transform.unwrap_or_else(crate::TransformationMatrix::unit);
+        let current = self
+            .style()
+            .transform
+            .unwrap_or_else(crate::TransformationMatrix::unit);
         // Convert Pixels to ScaledPixels - TransformationMatrix works in scaled space
         self.style().transform = Some(current.translate(crate::point(
             crate::ScaledPixels(x.0),
-            crate::ScaledPixels(y.0)
+            crate::ScaledPixels(y.0),
         )));
         self
     }

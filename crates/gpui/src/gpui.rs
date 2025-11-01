@@ -19,7 +19,10 @@ mod color;
 pub mod colors;
 mod element;
 mod elements;
+/// Environment: locale and window metrics access and subscriptions.
+pub mod environment;
 mod executor;
+mod ffi;
 mod geometry;
 mod global;
 mod input;
@@ -29,16 +32,13 @@ mod key_dispatch;
 mod keymap;
 mod path_builder;
 mod platform;
-/// Environment: locale and window metrics access and subscriptions.
-pub mod environment;
-mod ffi;
 pub mod prelude;
+pub mod retained;
 mod scene;
 mod shared_string;
 mod shared_uri;
 mod style;
 mod styled;
-pub mod retained;
 mod subscription;
 mod svg_renderer;
 mod tab_stop;
