@@ -7,22 +7,35 @@
 
 use crate::{BoxShadow, Div, Stateful, div, prelude::*, px};
 use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::sync::RwLock;
+use std::sync::{Arc, OnceLock, RwLock};
+use serde_json::Value as JsonValue;
 
+/// The type/kind of a retained view node.
 #[derive(Clone, Debug, PartialEq)]
-enum NodeKind {
+pub enum NodeKind {
+    /// Root container view
     RootView,
+    /// Generic view container
     View,
+    /// Paragraph text container
     Paragraph,
+    /// Text node
     Text,
+    /// Raw text content
     RawText,
+    /// Image view
     Image,
+    /// Scrollable view container
     ScrollView,
+    /// Pressable/clickable view
     Pressable,
+    /// Safe area view for device insets
     SafeAreaView,
+    /// Toggle switch component
     Switch,
+    /// Text input component
     TextInput,
+    /// Custom component type (for third-party extensions)
     Other(String),
 }
 
@@ -32,12 +45,17 @@ impl Default for NodeKind {
     }
 }
 
+/// Layout frame defining the position and size of a view.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct LayoutFrame {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub struct LayoutFrame {
+    /// X coordinate
+    pub x: f32,
+    /// Y coordinate
+    pub y: f32,
+    /// Width
+    pub w: f32,
+    /// Height
+    pub h: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -79,8 +97,9 @@ impl<T> CornerValues<T> {
     }
 }
 
+/// Visual styling for borders (width, color, radius, style).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct BorderVisual {
+pub struct BorderVisual {
     uniform_radius: Option<f32>,
     uniform_width: Option<f32>,
     uniform_color: Option<[u8; 4]>,
@@ -104,8 +123,9 @@ impl BorderVisual {
     }
 }
 
+/// Shadow styling (color, offset, blur).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct ShadowStyle {
+pub struct ShadowStyle {
     color: [u8; 4],
     ox: f32,
     oy: f32,
@@ -148,8 +168,9 @@ pub struct TextStyleProps {
     pub wrap: Option<bool>,
 }
 
+/// Text styling (font, color, alignment, wrapping).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct TextStyle {
+pub struct TextStyle {
     font_size: Option<f32>,
     color: Option<[u8; 4]>,
     font_family: Option<String>,
@@ -191,8 +212,9 @@ impl TextStyle {
     }
 }
 
+/// Transform styling (translation, scale, rotation).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct TransformStyle {
+pub struct TransformStyle {
     tx: f32,
     ty: f32,
     sx: f32,
@@ -202,16 +224,18 @@ struct TransformStyle {
     oy: f32,
 }
 
+/// Scroll state (offsets and content size).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct ScrollState {
+pub struct ScrollState {
     offset_x: f32,
     offset_y: f32,
     content_width: f32,
     content_height: f32,
 }
 
+/// Styling for scroll content container (padding, alignment).
 #[derive(Clone, Debug, Default, PartialEq)]
-struct ScrollContentStyle {
+pub struct ScrollContentStyle {
     padding: EdgeValues<f32>,
     align_items: Option<crate::AlignItems>,
     justify_content: Option<crate::JustifyContent>,
@@ -223,40 +247,150 @@ impl ScrollContentStyle {
     }
 }
 
+/// A node in the retained view tree, containing layout, styling, and component state.
 #[derive(Clone, Debug, Default)]
-struct NodeView {
-    id: u64,
-    kind: NodeKind,
-    parent: Option<u64>,
-    children: Vec<u64>,
-    layout: Option<LayoutFrame>,
-    bg: Option<[u8; 4]>,
-    opacity: Option<f32>,
-    border: Option<BorderVisual>,
-    shadow: Option<ShadowStyle>,
-    transform: Option<TransformStyle>,
-    text: Option<String>,
-    text_style: Option<TextStyle>,
-    scroll: Option<ScrollState>,
-    image_uri: Option<String>,
-    clip: bool,
-    z_index: Option<i32>,
-    content_style: Option<ScrollContentStyle>,
-    // Switch component state
-    switch_checked: Option<bool>,
-    switch_disabled: Option<bool>,
-    // TextInput component state
-    input_placeholder: Option<String>,
-    input_editable: Option<bool>,
+pub struct NodeView {
+    /// Unique identifier for this node
+    pub id: u64,
+    /// The type/kind of this node
+    pub kind: NodeKind,
+    /// Parent node ID, if any
+    pub parent: Option<u64>,
+    /// Child node IDs
+    pub children: Vec<u64>,
+    /// Layout frame (position and size)
+    pub layout: Option<LayoutFrame>,
+    /// Background color as RGBA
+    pub bg: Option<[u8; 4]>,
+    /// Opacity value (0.0 to 1.0)
+    pub opacity: Option<f32>,
+    /// Border styling
+    pub border: Option<BorderVisual>,
+    /// Shadow styling
+    pub shadow: Option<ShadowStyle>,
+    /// Transform styling
+    pub transform: Option<TransformStyle>,
+    /// Text content
+    pub text: Option<String>,
+    /// Text styling
+    pub text_style: Option<TextStyle>,
+    /// Scroll state for scrollable views
+    pub scroll: Option<ScrollState>,
+    /// Image URI for image views
+    pub image_uri: Option<String>,
+    /// Whether to clip overflow
+    pub clip: bool,
+    /// Z-index for layering
+    pub z_index: Option<i32>,
+    /// Scroll content container styling
+    pub content_style: Option<ScrollContentStyle>,
+    /// Switch checked state
+    pub switch_checked: Option<bool>,
+    /// Switch disabled state
+    pub switch_disabled: Option<bool>,
+    /// Text input placeholder text
+    pub input_placeholder: Option<String>,
+    /// Whether text input is editable
+    pub input_editable: Option<bool>,
+    // Custom component extensibility
+    /// Generic property storage for custom components.
+    /// Third-party renderers can store arbitrary JSON properties here.
+    pub custom_props: HashMap<String, JsonValue>,
+    /// Event callback ID registry for custom components.
+    /// Maps event names to callback IDs that can be triggered from renderers.
+    pub event_callbacks: HashMap<String, u64>,
 }
 
+/// The retained view tree host that stores all nodes.
 #[derive(Default)]
-pub(crate) struct RetainedHost {
-    nodes: HashMap<u64, NodeView>,
-    root: Option<u64>,
+pub struct RetainedHost {
+    pub(crate) nodes: HashMap<u64, NodeView>,
+    pub(crate) root: Option<u64>,
 }
 
 pub(crate) static HOST: OnceLock<RwLock<RetainedHost>> = OnceLock::new();
+
+/// Trait for custom component renderers.
+/// Third-party libraries implement this to render their components in the retained view tree.
+///
+/// # Example
+///
+/// ```ignore
+/// use gpui::*;
+/// use gpui::retained::{CustomRenderer, NodeView, RetainedHost};
+/// use std::sync::Arc;
+///
+/// struct MyComponentRenderer;
+///
+/// impl CustomRenderer for MyComponentRenderer {
+///     fn render(&self, node: &NodeView, host: &RetainedHost) -> Option<Stateful<Div>> {
+///         // Check if this is our component type
+///         if matches!(&node.kind, NodeKind::Other(name) if name == "MyComponent") {
+///             Some(div().child("My Component"))
+///         } else {
+///             None
+///         }
+///     }
+///
+///     fn type_names(&self) -> &[&'static str] {
+///         &["MyComponent", "MyOtherComponent"]
+///     }
+/// }
+///
+/// // Register the renderer
+/// gpui::retained::register_custom_renderer(Arc::new(MyComponentRenderer));
+/// ```
+pub trait CustomRenderer: Send + Sync {
+    /// Render this node if it matches this renderer's type.
+    /// Returns Some(element) if handled, None if not applicable.
+    fn render(&self, node: &NodeView, host: &RetainedHost) -> Option<Stateful<Div>>;
+
+    /// Get the type names this renderer handles (e.g., ["GPUIButton", "GPUIIconButton"])
+    fn type_names(&self) -> &[&'static str];
+}
+
+/// Global registry of custom renderers
+static CUSTOM_RENDERERS: OnceLock<RwLock<HashMap<String, Arc<dyn CustomRenderer>>>> =
+    OnceLock::new();
+
+/// Register a custom renderer for specific component types.
+///
+/// This allows third-party libraries to add their own components that will be
+/// rendered as part of the retained view tree.
+///
+/// # Example
+///
+/// ```ignore
+/// use gpui::retained::{register_custom_renderer, CustomRenderer};
+/// use std::sync::Arc;
+///
+/// struct MyRenderer;
+/// impl CustomRenderer for MyRenderer {
+///     fn render(&self, node: &NodeView, host: &RetainedHost) -> Option<Stateful<Div>> {
+///         Some(div().child("My Component"))
+///     }
+///     fn type_names(&self) -> &[&'static str] { &["MyComponent"] }
+/// }
+///
+/// register_custom_renderer(Arc::new(MyRenderer));
+/// ```
+pub fn register_custom_renderer(renderer: Arc<dyn CustomRenderer>) {
+    let registry = CUSTOM_RENDERERS.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut reg = registry.write().unwrap();
+
+    for type_name in renderer.type_names() {
+        reg.insert(type_name.to_string(), renderer.clone());
+    }
+}
+
+/// Unregister a custom renderer by type name.
+///
+/// This removes the renderer for the specified component type from the registry.
+pub fn unregister_custom_renderer(type_name: &str) {
+    if let Some(registry) = CUSTOM_RENDERERS.get() {
+        registry.write().unwrap().remove(type_name);
+    }
+}
 
 fn rgba([r, g, b, a]: [u8; 4]) -> crate::Rgba {
     let hex: u32 = ((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | (a as u32);
@@ -771,6 +905,23 @@ fn render_node(host: &RetainedHost, node: &NodeView) -> Stateful<Div> {
             };
             finalize_children(host, base, node)
         }
+        NodeKind::Other(ref type_name) => {
+            // Try custom renderers first
+            if let Some(registry) = CUSTOM_RENDERERS.get() {
+                if let Some(renderer) = registry.read().unwrap().get(type_name) {
+                    if let Some(element) = renderer.render(node, host) {
+                        return element;
+                    }
+                }
+            }
+
+            // Fallback to default rendering if no custom renderer handled it
+            let mut base = div().id(("rn", node.id));
+            if node.clip {
+                base = base.overflow_hidden();
+            }
+            finalize_children(host, base, node)
+        }
         _ => {
             let mut base = if matches!(node.kind, NodeKind::RootView) {
                 div()
@@ -1089,4 +1240,134 @@ pub fn has_root() -> bool {
         .and_then(|h| h.read().ok())
         .and_then(|r| r.root)
         .is_some()
+}
+
+/// Set a custom property for a node (for third-party components).
+///
+/// This allows custom renderers to store arbitrary JSON properties on nodes.
+///
+/// # Example
+///
+/// ```ignore
+/// use serde_json::json;
+/// gpui::retained::set_custom_prop(42, "buttonVariant", json!("primary"));
+/// ```
+pub fn set_custom_prop(id: u64, key: impl Into<String>, value: JsonValue) {
+    let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+    let mut host = host_lock.write().unwrap();
+    if let Some(n) = host.nodes.get_mut(&id) {
+        n.custom_props.insert(key.into(), value);
+    }
+}
+
+/// Get a custom property from a node.
+///
+/// Returns `None` if the node doesn't exist or the property isn't set.
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(variant) = gpui::retained::get_custom_prop(42, "buttonVariant") {
+///     println!("Variant: {:?}", variant);
+/// }
+/// ```
+pub fn get_custom_prop(id: u64, key: &str) -> Option<JsonValue> {
+    let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+    let host = host_lock.read().unwrap();
+    host.nodes.get(&id)?.custom_props.get(key).cloned()
+}
+
+/// Set multiple custom properties at once from a JSON object.
+///
+/// This is useful for bulk property updates from external systems.
+///
+/// # Example
+///
+/// ```ignore
+/// use serde_json::json;
+/// let props = json!({
+///     "title": "Click Me",
+///     "disabled": false,
+///     "variant": "primary"
+/// });
+/// gpui::retained::set_custom_props(42, props);
+/// ```
+pub fn set_custom_props(id: u64, props: JsonValue) {
+    if let Some(obj) = props.as_object() {
+        let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+        let mut host = host_lock.write().unwrap();
+        if let Some(n) = host.nodes.get_mut(&id) {
+            for (key, value) in obj {
+                n.custom_props.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// Get all custom properties as a JSON object.
+///
+/// Returns `None` if the node doesn't exist.
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(props) = gpui::retained::get_custom_props(42) {
+///     println!("All props: {:?}", props);
+/// }
+/// ```
+pub fn get_custom_props(id: u64) -> Option<JsonValue> {
+    let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+    let host = host_lock.read().unwrap();
+    let node = host.nodes.get(&id)?;
+    Some(JsonValue::Object(
+        node.custom_props
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    ))
+}
+
+/// Register an event callback by ID for a node.
+///
+/// The callback ID can later be retrieved and used to trigger events from custom renderers.
+///
+/// # Example
+///
+/// ```ignore
+/// // Register a callback
+/// gpui::retained::set_event_callback(42, "onClick", 123);
+///
+/// // Later, in a custom renderer:
+/// if let Some(callback_id) = gpui::retained::get_event_callback(42, "onClick") {
+///     // Trigger the callback via FFI
+///     trigger_js_callback(callback_id, json!({}));
+/// }
+/// ```
+pub fn set_event_callback(id: u64, event_name: impl Into<String>, callback_id: u64) {
+    let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+    let mut host = host_lock.write().unwrap();
+    if let Some(n) = host.nodes.get_mut(&id) {
+        n.event_callbacks.insert(event_name.into(), callback_id);
+    }
+}
+
+/// Get an event callback ID for a node.
+///
+/// Returns `None` if the node doesn't exist or the callback isn't registered.
+///
+/// # Example
+///
+/// ```ignore
+/// if let Some(callback_id) = gpui::retained::get_event_callback(42, "onClick") {
+///     // Use the callback_id to trigger the event
+/// }
+/// ```
+pub fn get_event_callback(id: u64, event_name: &str) -> Option<u64> {
+    let host_lock = HOST.get_or_init(|| RwLock::new(RetainedHost::default()));
+    let host = host_lock.read().unwrap();
+    host.nodes
+        .get(&id)?
+        .event_callbacks
+        .get(event_name)
+        .copied()
 }
