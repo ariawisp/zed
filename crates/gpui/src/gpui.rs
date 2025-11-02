@@ -33,7 +33,6 @@ mod keymap;
 mod path_builder;
 mod platform;
 pub mod prelude;
-pub mod retained;
 mod scene;
 mod shared_string;
 mod shared_uri;
