@@ -475,10 +475,14 @@ pub(crate) struct CursorStyleRequest {
     pub(crate) style: CursorStyle,
 }
 
-#[derive(Default, Eq, PartialEq)]
-pub(crate) struct HitTest {
-    pub(crate) ids: SmallVec<[HitboxId; 8]>,
-    pub(crate) hover_hitbox_count: usize,
+/// Result of hit testing at a point. Contains all hitbox IDs at that position in paint order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HitTest {
+    /// Hitbox IDs at the tested position, in paint order (front to back).
+    pub ids: SmallVec<[HitboxId; 8]>,
+    /// Number of hitboxes that should be considered for hover. This excludes hitboxes
+    /// behind elements with `HitboxBehavior::BlockMouseExceptScroll`.
+    pub hover_hitbox_count: usize,
 }
 
 /// A type of window control area that corresponds to the platform window.
@@ -681,6 +685,9 @@ pub(crate) struct Frame {
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
+    /// Generic metadata storage for hitboxes. Allows attaching custom data to hitboxes
+    /// that can be retrieved during hit testing. Used by embedders like React Native.
+    pub(crate) hitbox_metadata: FxHashMap<HitboxId, Box<dyn Any + Send + Sync>>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
@@ -727,6 +734,7 @@ impl Frame {
             scene: Scene::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
+            hitbox_metadata: FxHashMap::default(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
@@ -755,6 +763,7 @@ impl Frame {
         self.cursor_styles.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
+        self.hitbox_metadata.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
@@ -3378,6 +3387,35 @@ impl Window {
     pub fn insert_window_control_hitbox(&mut self, area: WindowControlArea, hitbox: Hitbox) {
         self.invalidator.debug_assert_paint();
         self.next_frame.window_control_hitboxes.push((area, hitbox));
+    }
+
+    /// Register custom metadata for a hitbox. This metadata can be retrieved later
+    /// during hit testing using `get_hitbox_metadata`. The type must be `Send + Sync + 'static`.
+    ///
+    /// This is useful for embedders that need to associate domain-specific data with hitboxes,
+    /// such as React Native tags or other identifiers.
+    ///
+    /// This method should only be called as part of the prepaint or paint phase of element drawing.
+    pub fn set_hitbox_metadata<T: Any + Send + Sync>(&mut self, hitbox_id: HitboxId, data: T) {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        self.next_frame.hitbox_metadata.insert(hitbox_id, Box::new(data));
+    }
+
+    /// Retrieve custom metadata for a hitbox from the rendered frame.
+    ///
+    /// Returns `None` if no metadata was registered for this hitbox ID or if the type doesn't match.
+    pub fn get_hitbox_metadata<T: Any>(&self, hitbox_id: HitboxId) -> Option<&T> {
+        self.rendered_frame.hitbox_metadata.get(&hitbox_id)?.downcast_ref::<T>()
+    }
+
+    /// Perform hit testing at an arbitrary position using the rendered frame's hitboxes.
+    /// Returns a `HitTest` containing hitbox IDs at the position in paint order (front to back).
+    ///
+    /// This can be called at any time and queries the last completed frame. This is useful
+    /// for embedders that need synchronous hit testing outside of GPUI's event dispatch,
+    /// such as FFI calls from JavaScript.
+    pub fn hit_test_at(&self, position: Point<Pixels>) -> HitTest {
+        self.rendered_frame.hit_test(position)
     }
 
     /// Sets the key context for the current element. This context will be used to translate
