@@ -31,6 +31,30 @@ pub trait Styled: Sized {
     gpui_macros::border_style_methods!();
     gpui_macros::box_shadow_style_methods!();
 
+    /// Pointer events: default behavior
+    fn pe_auto(mut self) -> Self {
+        self.style().pointer_events = Some(gpui::PointerEvents::Auto);
+        self
+    }
+
+    /// Pointer events: do not receive events, children can
+    fn pe_box_none(mut self) -> Self {
+        self.style().pointer_events = Some(gpui::PointerEvents::BoxNone);
+        self
+    }
+
+    /// Pointer events: this element receives events, children do not
+    fn pe_box_only(mut self) -> Self {
+        self.style().pointer_events = Some(gpui::PointerEvents::BoxOnly);
+        self
+    }
+
+    /// Pointer events: neither this element nor its children receive events
+    fn pe_none(mut self) -> Self {
+        self.style().pointer_events = Some(gpui::PointerEvents::None);
+        self
+    }
+
     /// Sets the display type of the element to `block`.
     /// [Docs](https://tailwindcss.com/docs/display)
     fn block(mut self) -> Self {

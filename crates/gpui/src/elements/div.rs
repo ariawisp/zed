@@ -1476,6 +1476,51 @@ impl Element for Div {
     }
 }
 
+/// Global pointer-events suppression context used during traversal for hitbox insertion.
+#[derive(Default)]
+struct PointerEventsContext {
+    suppress_children_depth: usize,
+    suppress_self_depth: usize,
+}
+
+impl Global for PointerEventsContext {}
+
+impl PointerEventsContext {
+    fn push(&mut self, pe: crate::PointerEvents) {
+        match pe {
+            crate::PointerEvents::Auto | crate::PointerEvents::BoxNone => {}
+            crate::PointerEvents::BoxOnly => {
+                self.suppress_children_depth += 1;
+            }
+            crate::PointerEvents::None => {
+                self.suppress_children_depth += 1;
+                self.suppress_self_depth += 1;
+            }
+        }
+    }
+
+    fn pop(&mut self, pe: crate::PointerEvents) {
+        match pe {
+            crate::PointerEvents::Auto | crate::PointerEvents::BoxNone => {}
+            crate::PointerEvents::BoxOnly => {
+                self.suppress_children_depth = self.suppress_children_depth.saturating_sub(1);
+            }
+            crate::PointerEvents::None => {
+                self.suppress_children_depth = self.suppress_children_depth.saturating_sub(1);
+                self.suppress_self_depth = self.suppress_self_depth.saturating_sub(1);
+            }
+        }
+    }
+
+    fn suppress_self(&self) -> bool {
+        self.suppress_self_depth > 0
+    }
+
+    fn suppress_children(&self) -> bool {
+        self.suppress_children_depth > 0
+    }
+}
+
 impl IntoElement for Div {
     type Element = Self;
 
@@ -1694,7 +1739,17 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
+                            // Enter pointer-events context for children based on this element's style.
+                            cx.default_global::<PointerEventsContext>();
+                            {
+                                let ctx = cx.global_mut::<PointerEventsContext>();
+                                ctx.push(style.pointer_events);
+                            }
                             let result = f(&style, scroll_offset, hitbox, window, cx);
+                            {
+                                let ctx = cx.global_mut::<PointerEventsContext>();
+                                ctx.pop(style.pointer_events);
+                            }
                             (result, element_state)
                         },
                     )
@@ -1703,7 +1758,20 @@ impl Interactivity {
         )
     }
 
-    fn should_insert_hitbox(&self, style: &Style, window: &Window, cx: &App) -> bool {
+    fn should_insert_hitbox(&self, style: &Style, window: &Window, cx: &mut App) -> bool {
+        // Respect pointer-events on this element
+        match style.pointer_events {
+            crate::PointerEvents::BoxNone | crate::PointerEvents::None => return false,
+            _ => {}
+        }
+
+        // Suppress via ancestor context
+        if let Some(ctx) = cx.try_global::<PointerEventsContext>() {
+            if ctx.suppress_children() || ctx.suppress_self() {
+                return false;
+            }
+        }
+
         self.hitbox_behavior != HitboxBehavior::Normal
             || self.window_control.is_some()
             || style.mouse_cursor.is_some()

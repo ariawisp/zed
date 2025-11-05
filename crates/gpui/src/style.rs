@@ -25,6 +25,20 @@ pub struct DebugBelow;
 #[cfg(debug_assertions)]
 impl crate::Global for DebugBelow {}
 
+/// Pointer events behavior for interactive elements.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum PointerEvents {
+    /// Default behavior: this element and its children can receive pointer events.
+    #[default]
+    Auto,
+    /// Neither this element nor its children receive pointer events; events pass through.
+    None,
+    /// This element does not receive pointer events, but its children can.
+    BoxNone,
+    /// This element receives pointer events, but its children do not.
+    BoxOnly,
+}
+
 /// How to fit the image into the bounds of the element.
 pub enum ObjectFit {
     /// The image will be stretched to fill the bounds of the element.
@@ -256,6 +270,9 @@ pub struct Style {
 
     /// The mouse cursor style shown when the mouse pointer is over an element.
     pub mouse_cursor: Option<CursorStyle>,
+
+    /// How this element and/or its children should handle pointer events.
+    pub pointer_events: PointerEvents,
 
     /// The opacity of this element
     pub opacity: Option<f32>,
@@ -775,6 +792,7 @@ impl Default for Style {
             box_shadow: Default::default(),
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
+            pointer_events: PointerEvents::Auto,
             opacity: None,
             transform: None,
             grid_rows: None,
