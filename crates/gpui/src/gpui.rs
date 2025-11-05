@@ -22,7 +22,6 @@ mod elements;
 /// Environment: locale and window metrics access and subscriptions.
 pub mod environment;
 mod executor;
-mod ffi;
 mod geometry;
 mod global;
 mod input;
