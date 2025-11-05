@@ -3418,6 +3418,22 @@ impl Window {
         self.rendered_frame.hit_test(position)
     }
 
+    /// Iterate all hitboxes from the rendered frame in paint order (front to back).
+    /// For each hitbox, calls the provided closure with the hitbox ID, bounds, and metadata (if any).
+    ///
+    /// This is useful for embedders that need to build caches or snapshots of the UI tree
+    /// for synchronous queries. The hitboxes are provided in the same order they were painted.
+    pub fn iter_hitboxes_with_metadata<F>(&self, mut f: F)
+    where
+        F: FnMut(HitboxId, Bounds<Pixels>, Option<&(dyn Any + Send + Sync)>),
+    {
+        for hitbox in &self.rendered_frame.hitboxes {
+            let metadata = self.rendered_frame.hitbox_metadata.get(&hitbox.id)
+                .map(|boxed| boxed.as_ref() as &(dyn Any + Send + Sync));
+            f(hitbox.id, hitbox.bounds, metadata);
+        }
+    }
+
     /// Sets the key context for the current element. This context will be used to translate
     /// keybindings into actions.
     ///
