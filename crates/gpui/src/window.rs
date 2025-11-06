@@ -3358,6 +3358,21 @@ impl Window {
         bounds
     }
 
+    /// Override the computed layout bounds for a given node for this frame.
+    ///
+    /// This is useful when embedding GPUI in an environment where another layout
+    /// engine (such as React Native's Yoga) is authoritative for certain subtrees.
+    /// The provided `bounds` must be window-relative.
+    ///
+    /// This method should only be called as part of the prepaint phase of element drawing.
+    pub fn set_external_layout_bounds(&mut self, layout_id: LayoutId, bounds: Bounds<Pixels>) {
+        self.invalidator.debug_assert_prepaint();
+        self.layout_engine
+            .as_mut()
+            .unwrap()
+            .set_external_bounds(layout_id, bounds);
+    }
+
     /// This method should be called during `prepaint`. You can use
     /// the returned [Hitbox] during `paint` or in an event handler
     /// to determine whether the inserted hitbox was the topmost.

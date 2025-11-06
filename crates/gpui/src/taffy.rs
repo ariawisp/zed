@@ -53,6 +53,15 @@ impl TaffyLayoutEngine {
         self.computed_layouts.clear();
     }
 
+    /// Override the computed layout bounds for a given node for this frame.
+    ///
+    /// Embedders that integrate an external layout engine (e.g., React Native's Yoga)
+    /// can call this to provide absolute, window-relative bounds for a layout node.
+    /// When present, `layout_bounds` will return these bounds instead of querying Taffy.
+    pub fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
+        self.absolute_layout_bounds.insert(id, bounds);
+    }
+
     pub fn request_layout(
         &mut self,
         style: Style,
