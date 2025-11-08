@@ -3411,14 +3411,19 @@ impl Window {
     /// This method should only be called as part of the prepaint or paint phase of element drawing.
     pub fn set_hitbox_metadata<T: Any + Send + Sync>(&mut self, hitbox_id: HitboxId, data: T) {
         self.invalidator.debug_assert_paint_or_prepaint();
-        self.next_frame.hitbox_metadata.insert(hitbox_id, Box::new(data));
+        self.next_frame
+            .hitbox_metadata
+            .insert(hitbox_id, Box::new(data));
     }
 
     /// Retrieve custom metadata for a hitbox from the rendered frame.
     ///
     /// Returns `None` if no metadata was registered for this hitbox ID or if the type doesn't match.
     pub fn get_hitbox_metadata<T: Any>(&self, hitbox_id: HitboxId) -> Option<&T> {
-        self.rendered_frame.hitbox_metadata.get(&hitbox_id)?.downcast_ref::<T>()
+        self.rendered_frame
+            .hitbox_metadata
+            .get(&hitbox_id)?
+            .downcast_ref::<T>()
     }
 
     /// Perform hit testing at an arbitrary position using the rendered frame's hitboxes.
@@ -3441,7 +3446,10 @@ impl Window {
         F: FnMut(HitboxId, Bounds<Pixels>, Option<&(dyn Any + Send + Sync)>),
     {
         for hitbox in &self.rendered_frame.hitboxes {
-            let metadata = self.rendered_frame.hitbox_metadata.get(&hitbox.id)
+            let metadata = self
+                .rendered_frame
+                .hitbox_metadata
+                .get(&hitbox.id)
                 .map(|boxed| boxed.as_ref() as &(dyn Any + Send + Sync));
             f(hitbox.id, hitbox.bounds, metadata);
         }

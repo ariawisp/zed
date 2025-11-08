@@ -3301,6 +3301,11 @@ impl ScrollHandle {
         *state.offset.borrow_mut() = position;
     }
 
+    /// Override the maximum scroll offset (used to clamp scroll bounds).
+    pub fn set_max_offset(&self, max: Size<Pixels>) {
+        self.0.borrow_mut().max_offset = max;
+    }
+
     /// Get the logical scroll top, based on a child index and a pixel offset.
     pub fn logical_scroll_top(&self) -> (usize, Pixels) {
         let ix = self.top_item();
