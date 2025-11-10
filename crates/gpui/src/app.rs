@@ -1,10 +1,11 @@
 use std::{
     any::{TypeId, type_name},
-    cell::{BorrowMutError, Ref, RefCell, RefMut},
+    cell::{BorrowMutError, Cell, Ref, RefCell, RefMut},
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
+    ptr,
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
     time::{Duration, Instant},
@@ -123,6 +124,46 @@ impl Drop for AppRefMut<'_> {
 /// A reference to a GPUI application, typically constructed in the `main` function of your app.
 /// You won't interact with this type much outside of initial configuration and startup.
 pub struct Application(Rc<AppCell>);
+
+thread_local! {
+    static CURRENT_APP: Cell<*mut App> = Cell::new(ptr::null_mut());
+}
+
+struct CurrentAppGuard {
+    prev: *mut App,
+}
+
+impl CurrentAppGuard {
+    fn enter(app: &mut App) -> Self {
+        let ptr = app as *mut App;
+        let prev = CURRENT_APP.with(|cell| {
+            let prev = cell.get();
+            cell.set(ptr);
+            prev
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentAppGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        CURRENT_APP.with(|cell| cell.set(prev));
+    }
+}
+
+/// Run `f` with the currently-updating app if one is active on this thread.
+pub fn with_current_app_mut<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    CURRENT_APP.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: `CURRENT_APP` only points to a live `App` during `App::update`.
+            Some(unsafe { f(&mut *ptr) })
+        }
+    })
+}
 
 /// Represents an application before it is fully launched. Once your app is
 /// configured, you'll start the app with `App::run`.
@@ -761,12 +802,13 @@ impl App {
         self.pending_effects.push_back(Effect::RefreshWindows);
     }
 
-    pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
-        self.start_update();
-        let result = update(self);
-        self.finish_update();
-        result
-    }
+pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
+    self.start_update();
+    let _guard = CurrentAppGuard::enter(self);
+    let result = update(self);
+    self.finish_update();
+    result
+}
 
     pub(crate) fn start_update(&mut self) {
         self.pending_updates += 1;
