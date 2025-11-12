@@ -1,24 +1,24 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
 use crate::{
-    ensure_node_geometry_service, Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView,
-    App, AppContext, Arena, Asset, AsyncWindowContext, AvailableSpace, Background, BorderStyle,
-    Bounds, BoxShadow, Capslock, Context, Corners, CursorStyle, Decorations, DevicePixels,
-    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
-    Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
-    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, NodeGeometryStore, NodeSnapshot, Path,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PolychromeSprite, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, ScrollContainerId, Shadow,
-    SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
+    Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
+    AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
+    Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
+    DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
+    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
+    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
+    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
+    MouseMoveEvent, MouseUpEvent, NodeGeometryStore, NodeSnapshot, Path, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, ScrollContainerId, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
-    WindowParams, WindowTextSystem, clear_global_snapshots, point, prelude::*, px, record_global_snapshot,
-    rems, size, transparent_black,
+    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
+    clear_global_snapshots, ensure_node_geometry_service, point, prelude::*, px,
+    record_global_snapshot, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -57,9 +57,9 @@ use uuid::Uuid;
 
 mod prompts;
 
+pub use crate::taffy::ExternalLayoutOverride;
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
-pub use crate::taffy::ExternalLayoutOverride;
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
@@ -3418,10 +3418,7 @@ impl Window {
     /// This can be invoked outside of prepaint (e.g., during commit processing) so that
     /// subsequent layout queries observe the provided bounds/styles without waiting for the
     /// next prepaint pass.
-    pub fn apply_external_layout_overrides(
-        &mut self,
-        overrides: &[ExternalLayoutOverride],
-    ) {
+    pub fn apply_external_layout_overrides(&mut self, overrides: &[ExternalLayoutOverride]) {
         if overrides.is_empty() {
             return;
         }
@@ -3452,6 +3449,28 @@ impl Window {
     /// Retrieve the last committed snapshot for a layout node.
     pub fn node_snapshot(&self, layout_id: LayoutId) -> Option<NodeSnapshot> {
         self.rendered_frame.node_geometry.snapshot(layout_id)
+    }
+
+    /// Drop any cached geometry for the provided layout node.
+    pub fn invalidate_layout_node(&mut self, layout_id: LayoutId) {
+        let window_id = self.handle.window_id();
+        self.rendered_frame
+            .node_geometry
+            .invalidate(window_id, layout_id);
+        self.next_frame
+            .node_geometry
+            .invalidate(window_id, layout_id);
+    }
+
+    /// Drop cached geometry for nodes affected by the given scroll container.
+    pub fn scroll_container_updated(&mut self, scroll_id: ScrollContainerId) {
+        let window_id = self.handle.window_id();
+        self.rendered_frame
+            .node_geometry
+            .scroll_container_updated(window_id, scroll_id);
+        self.next_frame
+            .node_geometry
+            .scroll_container_updated(window_id, scroll_id);
     }
 
     /// This method should be called during `prepaint`. You can use

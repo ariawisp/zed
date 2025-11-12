@@ -21,9 +21,9 @@ use crate::{
     Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext,
     KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Overflow,
-    ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea,
-    ScrollContainerId, point, px, size,
+    ParentElement, Pixels, Point, Render, ScrollContainerId, ScrollWheelEvent, SharedString, Size,
+    Style, StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point,
+    px, size,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -3201,14 +3201,16 @@ impl ScrollHandle {
         Self(Rc::default())
     }
 
-    pub(crate) fn ensure_scroll_container_id(
-        &self,
-        window: &mut Window,
-    ) -> ScrollContainerId {
+    pub(crate) fn ensure_scroll_container_id(&self, window: &mut Window) -> ScrollContainerId {
         let mut state = self.0.borrow_mut();
         *state
             .scroll_container_id
             .get_or_insert_with(|| window.allocate_scroll_container_id())
+    }
+
+    /// Access the scroll container identifier if one has been allocated.
+    pub fn scroll_container_id(&self) -> Option<ScrollContainerId> {
+        self.0.borrow().scroll_container_id
     }
 
     /// Get the current scroll offset.
