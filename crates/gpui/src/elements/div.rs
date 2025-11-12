@@ -22,8 +22,8 @@ use crate::{
     KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Overflow,
     ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
-    size,
+    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea,
+    ScrollContainerId, point, px, size,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -1409,6 +1409,7 @@ impl Element for Div {
             scroll_handle.scroll_to_active_item();
         }
 
+        let scroll_container_id = self.interactivity.scroll_container_id;
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -1422,11 +1423,19 @@ impl Element for Div {
                     return hitbox;
                 }
 
-                window.with_element_offset(scroll_offset, |window| {
-                    for child in &mut self.children {
-                        child.prepaint(window, cx);
-                    }
-                });
+                let mut prepaint_children = |window: &mut Window| {
+                    window.with_element_offset(scroll_offset, |window| {
+                        for child in &mut self.children {
+                            child.prepaint(window, cx);
+                        }
+                    });
+                };
+
+                if let Some(scroll_id) = scroll_container_id {
+                    window.with_scroll_container(scroll_id, |window| prepaint_children(window));
+                } else {
+                    prepaint_children(window);
+                }
 
                 if let Some(listener) = self.prepaint_listener.as_ref() {
                     listener(children_bounds, window, cx);
@@ -1548,6 +1557,7 @@ pub struct Interactivity {
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_container_id: Option<ScrollContainerId>,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied
     /// by focus, active, etc.
@@ -1668,6 +1678,28 @@ impl Interactivity {
                             .get_or_insert_with(Rc::default)
                             .clone(),
                     );
+                }
+
+                if self.scroll_offset.is_some() {
+                    let scroll_id = if let Some(scroll_handle) = self.tracked_scroll_handle.as_ref()
+                    {
+                        scroll_handle.ensure_scroll_container_id(window)
+                    } else if let Some(state) = element_state.as_mut() {
+                        let id = state
+                            .scroll_container_id
+                            .unwrap_or_else(|| window.allocate_scroll_container_id());
+                        state.scroll_container_id = Some(id);
+                        id
+                    } else {
+                        self.scroll_container_id
+                            .unwrap_or_else(|| window.allocate_scroll_container_id())
+                    };
+                    if let Some(state) = element_state.as_mut() {
+                        state.scroll_container_id = Some(scroll_id);
+                    }
+                    self.scroll_container_id = Some(scroll_id);
+                } else {
+                    self.scroll_container_id = None;
                 }
 
                 let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
@@ -2659,6 +2691,7 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_container_id: Option<ScrollContainerId>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
 }
 
@@ -3134,6 +3167,7 @@ struct ScrollHandleState {
     scroll_to_bottom: bool,
     overflow: Point<Overflow>,
     active_item: Option<ScrollActiveItem>,
+    scroll_container_id: Option<ScrollContainerId>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -3165,6 +3199,16 @@ impl ScrollHandle {
     /// Construct a new scroll handle.
     pub fn new() -> Self {
         Self(Rc::default())
+    }
+
+    pub(crate) fn ensure_scroll_container_id(
+        &self,
+        window: &mut Window,
+    ) -> ScrollContainerId {
+        let mut state = self.0.borrow_mut();
+        *state
+            .scroll_container_id
+            .get_or_insert_with(|| window.allocate_scroll_container_id())
     }
 
     /// Get the current scroll offset.

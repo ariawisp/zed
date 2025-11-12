@@ -1,22 +1,24 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
 use crate::{
-    Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
-    Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
-    DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
-    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
-    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, PromptButton, PromptLevel, Quad,
-    Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    ensure_node_geometry_service, Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView,
+    App, AppContext, Arena, Asset, AsyncWindowContext, AvailableSpace, Background, BorderStyle,
+    Bounds, BoxShadow, Capslock, Context, Corners, CursorStyle, Decorations, DevicePixels,
+    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+    EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+    Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
+    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, NodeGeometryStore, NodeSnapshot, Path,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PolychromeSprite, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, ScrollContainerId, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
+    WindowParams, WindowTextSystem, clear_global_snapshots, point, prelude::*, px, record_global_snapshot,
+    rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -57,6 +59,7 @@ mod prompts;
 
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
+pub use crate::taffy::ExternalLayoutOverride;
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
@@ -688,6 +691,7 @@ pub(crate) struct Frame {
     /// Generic metadata storage for hitboxes. Allows attaching custom data to hitboxes
     /// that can be retrieved during hit testing. Used by embedders like React Native.
     pub(crate) hitbox_metadata: FxHashMap<HitboxId, Box<dyn Any + Send + Sync>>,
+    pub(crate) node_geometry: NodeGeometryStore,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
@@ -735,6 +739,7 @@ impl Frame {
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             hitbox_metadata: FxHashMap::default(),
+            node_geometry: NodeGeometryStore::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
@@ -764,6 +769,7 @@ impl Frame {
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
         self.hitbox_metadata.clear();
+        self.node_geometry.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
@@ -859,6 +865,7 @@ pub struct Window {
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+    scroll_container_stack: SmallVec<[ScrollContainerId; 8]>,
     pub(crate) element_opacity: f32,
     pub(crate) transformation_stack: Vec<crate::TransformationMatrix>,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
@@ -867,6 +874,7 @@ pub struct Window {
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
+    next_scroll_container_id: u64,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
@@ -1227,6 +1235,7 @@ impl Window {
         }
 
         platform_window.map_window().unwrap();
+        ensure_node_geometry_service(cx);
 
         Ok(Window {
             handle,
@@ -1245,6 +1254,7 @@ impl Window {
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
+            scroll_container_stack: SmallVec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
             transformation_stack: Vec::new(),
@@ -1253,6 +1263,7 @@ impl Window {
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
+            next_scroll_container_id: 1,
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
@@ -1387,6 +1398,11 @@ impl Window {
         self.handle
     }
 
+    /// Returns the unique identifier for this window.
+    pub fn window_id(&self) -> WindowId {
+        self.handle.window_id()
+    }
+
     /// Mark the window as dirty, scheduling it to be redrawn on the next frame.
     pub fn refresh(&mut self) {
         if self.invalidator.not_drawing() {
@@ -1398,6 +1414,7 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+        clear_global_snapshots(self.handle.window_id());
     }
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
@@ -2457,6 +2474,26 @@ impl Window {
         self.with_absolute_element_offset(abs_offset, f)
     }
 
+    /// Allocate a fresh identifier for a scroll container.
+    pub fn allocate_scroll_container_id(&mut self) -> ScrollContainerId {
+        let id = ScrollContainerId::new(self.next_scroll_container_id);
+        self.next_scroll_container_id = self.next_scroll_container_id.wrapping_add(1);
+        id
+    }
+
+    /// Executes `f` while marking the active scroll container.
+    pub fn with_scroll_container<R>(
+        &mut self,
+        scroll_id: ScrollContainerId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_prepaint();
+        self.scroll_container_stack.push(scroll_id);
+        let result = f(self);
+        self.scroll_container_stack.pop();
+        result
+    }
+
     /// Updates the global element offset based on the given offset. This is used to implement
     /// drag handles and other manual painting of elements. This method should only be called during
     /// the prepaint phase of element drawing.
@@ -3348,14 +3385,16 @@ impl Window {
         self.invalidator.debug_assert_prepaint();
 
         let scale_factor = self.scale_factor();
-        let mut bounds = self
+        let local_bounds = self
             .layout_engine
             .as_mut()
             .unwrap()
             .layout_bounds(layout_id, scale_factor)
             .map(Into::into);
-        bounds.origin += self.element_offset();
-        bounds
+        let mut window_bounds = local_bounds;
+        window_bounds.origin += self.element_offset();
+        self.record_node_snapshot(layout_id, local_bounds, window_bounds);
+        window_bounds
     }
 
     /// Override the computed layout bounds for a given node for this frame.
@@ -3371,6 +3410,48 @@ impl Window {
             .as_mut()
             .unwrap()
             .set_external_bounds(layout_id, bounds);
+        self.record_node_snapshot(layout_id, bounds, bounds);
+    }
+
+    /// Apply a batch of externally-computed layout overrides.
+    ///
+    /// This can be invoked outside of prepaint (e.g., during commit processing) so that
+    /// subsequent layout queries observe the provided bounds/styles without waiting for the
+    /// next prepaint pass.
+    pub fn apply_external_layout_overrides(
+        &mut self,
+        overrides: &[ExternalLayoutOverride],
+    ) {
+        if overrides.is_empty() {
+            return;
+        }
+
+        self.layout_engine
+            .as_mut()
+            .unwrap()
+            .apply_external_overrides(overrides.iter());
+    }
+
+    /// Persist a node snapshot for the current frame.
+    pub fn record_node_snapshot(
+        &mut self,
+        layout_id: LayoutId,
+        local: Bounds<Pixels>,
+        window: Bounds<Pixels>,
+    ) {
+        self.invalidator.debug_assert_prepaint();
+        let snapshot = self.next_frame.node_geometry.record(
+            layout_id,
+            local,
+            window,
+            self.scroll_container_stack.as_slice(),
+        );
+        record_global_snapshot(self.handle.window_id(), layout_id, &snapshot);
+    }
+
+    /// Retrieve the last committed snapshot for a layout node.
+    pub fn node_snapshot(&self, layout_id: LayoutId) -> Option<NodeSnapshot> {
+        self.rendered_frame.node_geometry.snapshot(layout_id)
     }
 
     /// This method should be called during `prepaint`. You can use

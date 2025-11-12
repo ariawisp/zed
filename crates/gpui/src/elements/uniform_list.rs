@@ -358,6 +358,7 @@ impl Element for UniformList {
             });
             handle.deferred_scroll_to_item.take()
         });
+        let scroll_container_id = self.interactivity.scroll_container_id;
 
         self.interactivity.prepaint(
             global_id,
@@ -367,11 +368,12 @@ impl Element for UniformList {
             window,
             cx,
             |_style, mut scroll_offset, hitbox, window, cx| {
-                let y_flipped = if let Some(scroll_handle) = &self.scroll_handle {
-                    let scroll_state = scroll_handle.0.borrow();
-                    scroll_state.y_flipped
-                } else {
-                    false
+                let mut run = |window: &mut Window| {
+                    let y_flipped = if let Some(scroll_handle) = &self.scroll_handle {
+                        let scroll_state = scroll_handle.0.borrow();
+                        scroll_state.y_flipped
+                    } else {
+                        false
                 };
 
                 if self.item_count > 0 {
@@ -515,6 +517,13 @@ impl Element for UniformList {
                 }
 
                 hitbox
+                };
+
+                if let Some(scroll_id) = scroll_container_id {
+                    window.with_scroll_container(scroll_id, |window| run(window))
+                } else {
+                    run(window)
+                }
             },
         )
     }

@@ -26,9 +26,26 @@ type NodeMeasureFn = StackSafe<
 struct NodeContext {
     measure: NodeMeasureFn,
 }
+
+/// Represents an externally-computed layout override for a node in the layout tree.
+///
+/// External embedders (e.g., React Native) can provide authoritative layout information
+/// for specific [`LayoutId`]s. During commit processing, a batch of overrides can be
+/// pushed into the layout engine so subsequent GPUI layout queries observe the
+/// externally-computed bounds and style metadata.
+#[derive(Clone, Debug)]
+pub struct ExternalLayoutOverride {
+    /// The layout node to override.
+    pub layout_id: LayoutId,
+    /// Absolute, window-relative bounds for the node.
+    pub bounds: Bounds<Pixels>,
+    /// Optional style metadata describing padding/margin/etc for the node.
+    pub style: Option<Style>,
+}
 pub struct TaffyLayoutEngine {
     taffy: TaffyTree<NodeContext>,
     absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
+    external_styles: FxHashMap<LayoutId, Style>,
     computed_layouts: FxHashSet<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
 }
@@ -42,6 +59,7 @@ impl TaffyLayoutEngine {
         TaffyLayoutEngine {
             taffy,
             absolute_layout_bounds: FxHashMap::default(),
+            external_styles: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             layout_bounds_scratch_space: Vec::new(),
         }
@@ -50,6 +68,7 @@ impl TaffyLayoutEngine {
     pub fn clear(&mut self) {
         self.taffy.clear();
         self.absolute_layout_bounds.clear();
+        self.external_styles.clear();
         self.computed_layouts.clear();
     }
 
@@ -60,6 +79,24 @@ impl TaffyLayoutEngine {
     /// When present, `layout_bounds` will return these bounds instead of querying Taffy.
     pub fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
         self.absolute_layout_bounds.insert(id, bounds);
+    }
+
+    /// Apply a batch of externally-computed layout overrides.
+    ///
+    /// Each override contains absolute bounds along with optional style metadata that
+    /// should be associated with the node for the current frame.
+    pub fn apply_external_overrides<'a>(
+        &mut self,
+        overrides: impl IntoIterator<Item = &'a ExternalLayoutOverride>,
+    ) {
+        for override_entry in overrides {
+            self.absolute_layout_bounds
+                .insert(override_entry.layout_id, override_entry.bounds);
+            if let Some(style) = &override_entry.style {
+                self.external_styles
+                    .insert(override_entry.layout_id, style.clone());
+            }
+        }
     }
 
     pub fn request_layout(
