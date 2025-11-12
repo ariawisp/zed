@@ -132,7 +132,7 @@ impl NodeGeometryService for NodeGeometryServiceImpl {
 
 /// Global wrapper that exposes the node geometry service to GPUI callers.
 #[derive(Default)]
-pub(crate) struct NodeGeometryServiceGlobal {
+pub struct NodeGeometryServiceGlobal {
     service: NodeGeometryServiceImpl,
 }
 
