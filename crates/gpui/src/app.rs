@@ -618,6 +618,8 @@ pub struct App {
     pub(crate) restart_observers: SubscriberSet<(), Handler>,
     pub(crate) restart_path: Option<PathBuf>,
     pub(crate) window_closed_observers: SubscriberSet<(), WindowClosedHandler>,
+    pub(crate) window_ready_observers: SubscriberSet<WindowId, Handler>,
+    pub(crate) ready_windows: FxHashSet<WindowId>,
     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
@@ -694,6 +696,8 @@ impl App {
                 restart_observers: SubscriberSet::new(),
                 restart_path: None,
                 window_closed_observers: SubscriberSet::new(),
+                window_ready_observers: SubscriberSet::new(),
+                ready_windows: FxHashSet::default(),
                 layout_id_buffer: Default::default(),
                 propagate_event: true,
                 prompt_builder: Some(PromptBuilder::Default),
@@ -808,13 +812,13 @@ impl App {
         self.pending_effects.push_back(Effect::RefreshWindows);
     }
 
-pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
-    self.start_update();
-    let _guard = CurrentAppGuard::enter(self);
-    let result = update(self);
-    self.finish_update();
-    result
-}
+    pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
+        self.start_update();
+        let _guard = CurrentAppGuard::enter(self);
+        let result = update(self);
+        self.finish_update();
+        result
+    }
 
     pub(crate) fn start_update(&mut self) {
         self.pending_updates += 1;
@@ -1018,6 +1022,7 @@ pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
 
                     cx.window_handles.insert(id, window.handle);
                     cx.windows.get_mut(id).unwrap().replace(Box::new(window));
+                    cx.trigger_window_ready(id);
                     Ok(handle)
                 }
                 Err(e) => {
@@ -1391,6 +1396,15 @@ pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
         callback(self);
     }
 
+    fn trigger_window_ready(&mut self, window_id: WindowId) {
+        if !self.ready_windows.insert(window_id) {
+            return;
+        }
+        for mut callback in self.window_ready_observers.remove(&window_id) {
+            let _ = callback(self);
+        }
+    }
+
     fn apply_entity_created_effect(
         &mut self,
         entity: AnyEntity,
@@ -1426,6 +1440,8 @@ pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
 
             if window.removed {
                 cx.window_handles.remove(&id);
+                cx.ready_windows.remove(&id);
+                for _ in cx.window_ready_observers.remove(&id) {}
                 cx.windows.remove(id);
 
                 cx.window_closed_observers.clone().retain(&(), |callback| {
@@ -1858,6 +1874,30 @@ pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
     /// The window is no longer accessible at the point this callback is invoked.
     pub fn on_window_closed(&self, mut on_closed: impl FnMut(&mut App) + 'static) -> Subscription {
         let (subscription, activate) = self.window_closed_observers.insert((), Box::new(on_closed));
+        activate();
+        subscription
+    }
+
+    /// Registers a callback that is invoked once the specified window has been fully initialized.
+    /// If the window is already ready, the callback runs immediately.
+    pub fn on_window_ready(
+        &mut self,
+        handle: AnyWindowHandle,
+        mut callback: impl FnMut(&mut App) + 'static,
+    ) -> Subscription {
+        if self.ready_windows.contains(&handle.window_id()) {
+            callback(self);
+            return Subscription::new(|| {});
+        }
+
+        let window_id = handle.window_id();
+        let (subscription, activate) = self.window_ready_observers.insert(
+            window_id,
+            Box::new(move |app: &mut App| {
+                callback(app);
+                false
+            }),
+        );
         activate();
         subscription
     }

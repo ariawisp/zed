@@ -3451,6 +3451,29 @@ impl Window {
         self.rendered_frame.node_geometry.snapshot(layout_id)
     }
 
+    /// Persist a snapshot for a node outside of prepaint (e.g., when an
+    /// embedder pushes externally-computed layout).
+    pub fn record_external_node_snapshot(
+        &mut self,
+        layout_id: LayoutId,
+        local: Bounds<Pixels>,
+        window: Bounds<Pixels>,
+    ) {
+        let lineage_source = self
+            .rendered_frame
+            .node_geometry
+            .snapshot(layout_id)
+            .or_else(|| self.next_frame.node_geometry.snapshot(layout_id));
+        let lineage_buf = lineage_source
+            .map(|snapshot| snapshot.scroll_lineage)
+            .unwrap_or_default();
+        let snapshot =
+            self.next_frame
+                .node_geometry
+                .record(layout_id, local, window, lineage_buf.as_slice());
+        record_global_snapshot(self.handle.window_id(), layout_id, &snapshot);
+    }
+
     /// Drop any cached geometry for the provided layout node.
     pub fn invalidate_layout_node(&mut self, layout_id: LayoutId) {
         let window_id = self.handle.window_id();
