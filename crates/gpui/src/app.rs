@@ -1902,6 +1902,11 @@ impl App {
         subscription
     }
 
+    /// Returns true if the window identified by `handle` has finished initialization.
+    pub fn is_window_ready(&self, handle: AnyWindowHandle) -> bool {
+        self.ready_windows.contains(&handle.window_id())
+    }
+
     pub(crate) fn clear_pending_keystrokes(&mut self) {
         for window in self.windows() {
             window
