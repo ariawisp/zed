@@ -1,9 +1,11 @@
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Edges, Length, Pixels, Point, Size, Style, Window,
+    AbsoluteLength, App, Bounds, DefiniteLength, Edges, LayoutEngine, LayoutId, Length, Pixels,
+    Point, Size, Style, Window,
+    layout::{AvailableSpace, ExternalLayoutOverride, LayoutMeasureFn},
     point, size,
 };
 use collections::{FxHashMap, FxHashSet};
-use stacksafe::{StackSafe, stacksafe};
+use stacksafe::stacksafe;
 use std::{fmt::Debug, ops::Range};
 use taffy::{
     TaffyTree, TraversePartialTree as _,
@@ -12,42 +14,17 @@ use taffy::{
     tree::NodeId,
 };
 
-type NodeMeasureFn = StackSafe<
-    Box<
-        dyn FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>,
-    >,
->;
-
 struct NodeContext {
-    measure: NodeMeasureFn,
+    measure: LayoutMeasureFn,
 }
 
-/// Represents an externally-computed layout override for a node in the layout tree.
-///
-/// External embedders (e.g., React Native) can provide authoritative layout information
-/// for specific [`LayoutId`]s. During commit processing, a batch of overrides can be
-/// pushed into the layout engine so subsequent GPUI layout queries observe the
-/// externally-computed bounds and style metadata.
-#[derive(Clone, Debug)]
-pub struct ExternalLayoutOverride {
-    /// The layout node to override.
-    pub layout_id: LayoutId,
-    /// Absolute, window-relative bounds for the node.
-    pub bounds: Bounds<Pixels>,
-    /// Optional style metadata describing padding/margin/etc for the node.
-    pub style: Option<Style>,
-}
 pub struct TaffyLayoutEngine {
     taffy: TaffyTree<NodeContext>,
     absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     external_styles: FxHashMap<LayoutId, Style>,
     computed_layouts: FxHashSet<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
+    node_id_scratch: Vec<NodeId>,
 }
 
 const EXPECT_MESSAGE: &str = "we should avoid taffy layout errors by construction if possible";
@@ -62,6 +39,7 @@ impl TaffyLayoutEngine {
             external_styles: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             layout_bounds_scratch_space: Vec::new(),
+            node_id_scratch: Vec::new(),
         }
     }
 
@@ -70,6 +48,7 @@ impl TaffyLayoutEngine {
         self.absolute_layout_bounds.clear();
         self.external_styles.clear();
         self.computed_layouts.clear();
+        self.node_id_scratch.clear();
     }
 
     /// Override the computed layout bounds for a given node for this frame.
@@ -114,11 +93,15 @@ impl TaffyLayoutEngine {
                 .expect(EXPECT_MESSAGE)
                 .into()
         } else {
-            self.taffy
-                // This is safe because LayoutId is repr(transparent) to taffy::tree::NodeId.
-                .new_with_children(taffy_style, LayoutId::to_taffy_slice(children))
-                .expect(EXPECT_MESSAGE)
-                .into()
+            self.node_id_scratch.clear();
+            self.node_id_scratch
+                .extend(children.iter().copied().map(NodeId::from));
+            let node_id = self
+                .taffy
+                .new_with_children(taffy_style, &self.node_id_scratch)
+                .expect(EXPECT_MESSAGE);
+            self.node_id_scratch.clear();
+            node_id.into()
         }
     }
 
@@ -127,23 +110,12 @@ impl TaffyLayoutEngine {
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
-        measure: impl FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>
-        + 'static,
+        measure: LayoutMeasureFn,
     ) -> LayoutId {
         let taffy_style = style.to_taffy(rem_size, scale_factor);
 
         self.taffy
-            .new_leaf_with_context(
-                taffy_style,
-                NodeContext {
-                    measure: StackSafe::new(Box::new(measure)),
-                },
-            )
+            .new_leaf_with_context(taffy_style, NodeContext { measure })
             .expect(EXPECT_MESSAGE)
             .into()
     }
@@ -153,12 +125,12 @@ impl TaffyLayoutEngine {
     fn count_all_children(&self, parent: LayoutId) -> anyhow::Result<u32> {
         let mut count = 0;
 
-        for child in self.taffy.children(parent.0)? {
+        for child in self.taffy.children(NodeId::from(parent))? {
             // Count this child.
             count += 1;
 
             // Count all of this child's children.
-            count += self.count_all_children(LayoutId(child))?
+            count += self.count_all_children(child.into())?
         }
 
         Ok(count)
@@ -169,13 +141,13 @@ impl TaffyLayoutEngine {
     fn max_depth(&self, depth: u32, parent: LayoutId) -> anyhow::Result<u32> {
         println!(
             "{parent:?} at depth {depth} has {} children",
-            self.taffy.child_count(parent.0)
+            self.taffy.child_count(NodeId::from(parent))
         );
 
         let mut max_child_depth = 0;
 
-        for child in self.taffy.children(parent.0)? {
-            max_child_depth = std::cmp::max(max_child_depth, self.max_depth(0, LayoutId(child))?);
+        for child in self.taffy.children(NodeId::from(parent))? {
+            max_child_depth = std::cmp::max(max_child_depth, self.max_depth(0, child.into())?);
         }
 
         Ok(depth + 1 + max_child_depth)
@@ -186,10 +158,10 @@ impl TaffyLayoutEngine {
     fn get_edges(&self, parent: LayoutId) -> anyhow::Result<Vec<(LayoutId, LayoutId)>> {
         let mut edges = Vec::new();
 
-        for child in self.taffy.children(parent.0)? {
-            edges.push((parent, LayoutId(child)));
+        for child in self.taffy.children(NodeId::from(parent))? {
+            edges.push((parent, child.into()));
 
-            edges.extend(self.get_edges(LayoutId(child))?);
+            edges.extend(self.get_edges(child.into())?);
         }
 
         Ok(edges)
@@ -295,7 +267,7 @@ impl TaffyLayoutEngine {
             ),
         };
 
-        if let Some(parent_id) = self.taffy.parent(id.0) {
+        if let Some(parent_id) = self.taffy.parent(NodeId::from(id)) {
             let parent_bounds = self.layout_bounds(parent_id.into(), scale_factor);
             bounds.origin += parent_bounds.origin;
         }
@@ -305,33 +277,71 @@ impl TaffyLayoutEngine {
     }
 }
 
-/// A unique identifier for a layout node, generated when requesting a layout from Taffy
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[repr(transparent)]
-pub struct LayoutId(NodeId);
-
-impl LayoutId {
-    fn to_taffy_slice(node_ids: &[Self]) -> &[taffy::NodeId] {
-        // SAFETY: LayoutId is repr(transparent) to taffy::tree::NodeId.
-        unsafe { std::mem::transmute::<&[LayoutId], &[taffy::NodeId]>(node_ids) }
+impl LayoutEngine for TaffyLayoutEngine {
+    fn clear(&mut self) {
+        TaffyLayoutEngine::clear(self);
     }
-}
 
-impl std::hash::Hash for LayoutId {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        u64::from(self.0).hash(state);
+    fn remove_node(&mut self, layout_id: LayoutId) {
+        if self.taffy.remove(layout_id.into()).is_ok() {
+            self.absolute_layout_bounds.remove(&layout_id);
+            self.external_styles.remove(&layout_id);
+            self.computed_layouts.remove(&layout_id);
+        }
+    }
+
+    fn request_layout(
+        &mut self,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+        children: &[LayoutId],
+    ) -> LayoutId {
+        TaffyLayoutEngine::request_layout(self, style, rem_size, scale_factor, children)
+    }
+
+    fn request_measured_layout(
+        &mut self,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+        measure: LayoutMeasureFn,
+    ) -> LayoutId {
+        TaffyLayoutEngine::request_measured_layout(self, style, rem_size, scale_factor, measure)
+    }
+
+    fn compute_layout(
+        &mut self,
+        id: LayoutId,
+        available_space: Size<AvailableSpace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        TaffyLayoutEngine::compute_layout(self, id, available_space, window, cx);
+    }
+
+    fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {
+        TaffyLayoutEngine::layout_bounds(self, id, scale_factor)
+    }
+
+    fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
+        TaffyLayoutEngine::set_external_bounds(self, id, bounds);
+    }
+
+    fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]) {
+        TaffyLayoutEngine::apply_external_overrides(self, overrides.iter());
     }
 }
 
 impl From<NodeId> for LayoutId {
     fn from(node_id: NodeId) -> Self {
-        Self(node_id)
+        LayoutId::from_raw(node_id.into())
     }
 }
 
 impl From<LayoutId> for NodeId {
-    fn from(layout_id: LayoutId) -> NodeId {
-        layout_id.0
+    fn from(layout_id: LayoutId) -> Self {
+        NodeId::from(layout_id.to_raw())
     }
 }
 
@@ -585,40 +595,6 @@ where
     }
 }
 
-/// The space available for an element to be laid out in
-#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
-pub enum AvailableSpace {
-    /// The amount of space available is the specified number of pixels
-    Definite(Pixels),
-    /// The amount of space available is indefinite and the node should be laid out under a min-content constraint
-    #[default]
-    MinContent,
-    /// The amount of space available is indefinite and the node should be laid out under a max-content constraint
-    MaxContent,
-}
-
-impl AvailableSpace {
-    /// Returns a `Size` with both width and height set to `AvailableSpace::MinContent`.
-    ///
-    /// This function is useful when you want to create a `Size` with the minimum content constraints
-    /// for both dimensions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use gpui::AvailableSpace;
-    /// let min_content_size = AvailableSpace::min_size();
-    /// assert_eq!(min_content_size.width, AvailableSpace::MinContent);
-    /// assert_eq!(min_content_size.height, AvailableSpace::MinContent);
-    /// ```
-    pub const fn min_size() -> Size<Self> {
-        Size {
-            width: Self::MinContent,
-            height: Self::MinContent,
-        }
-    }
-}
-
 impl From<AvailableSpace> for TaffyAvailableSpace {
     fn from(space: AvailableSpace) -> TaffyAvailableSpace {
         match space {
@@ -635,21 +611,6 @@ impl From<TaffyAvailableSpace> for AvailableSpace {
             TaffyAvailableSpace::Definite(value) => AvailableSpace::Definite(Pixels(value)),
             TaffyAvailableSpace::MinContent => AvailableSpace::MinContent,
             TaffyAvailableSpace::MaxContent => AvailableSpace::MaxContent,
-        }
-    }
-}
-
-impl From<Pixels> for AvailableSpace {
-    fn from(pixels: Pixels) -> Self {
-        AvailableSpace::Definite(pixels)
-    }
-}
-
-impl From<Size<Pixels>> for Size<AvailableSpace> {
-    fn from(size: Size<Pixels>) -> Self {
-        Size {
-            width: AvailableSpace::Definite(size.width),
-            height: AvailableSpace::Definite(size.height),
         }
     }
 }

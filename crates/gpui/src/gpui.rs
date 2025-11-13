@@ -29,6 +29,7 @@ mod inspector;
 mod interactive;
 mod key_dispatch;
 mod keymap;
+mod layout;
 mod node_geometry;
 mod path_builder;
 mod platform;
@@ -88,6 +89,7 @@ pub use inspector::*;
 pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
+pub use layout::{AvailableSpace, ExternalLayoutOverride, LayoutEngine, LayoutId};
 pub use node_geometry::*;
 pub use path_builder::*;
 pub use platform::*;
@@ -101,7 +103,6 @@ pub use styled::*;
 pub use subscription::*;
 pub use svg_renderer::*;
 pub(crate) use tab_stop::*;
-pub use taffy::{AvailableSpace, LayoutId};
 #[cfg(any(test, feature = "test-support"))]
 pub use test::*;
 pub use text_system::*;
@@ -112,7 +113,6 @@ pub use view::*;
 pub use window::*;
 
 use std::{any::Any, borrow::BorrowMut, future::Future};
-use taffy::TaffyLayoutEngine;
 
 /// The context trait, allows the different contexts in GPUI to be used
 /// interchangeably for certain operations.
