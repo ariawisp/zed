@@ -43,6 +43,8 @@ mod subscription;
 mod svg_renderer;
 mod tab_stop;
 mod taffy;
+#[cfg(feature = "yoga")]
+mod yoga;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 mod text_system;

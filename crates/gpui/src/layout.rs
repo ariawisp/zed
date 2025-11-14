@@ -146,5 +146,12 @@ pub trait LayoutEngine: 'static {
 
 /// Create the default layout engine used by Windows.
 pub(crate) fn default_layout_engine() -> Box<dyn LayoutEngine> {
-    Box::new(crate::taffy::TaffyLayoutEngine::new())
+    #[cfg(feature = "yoga")]
+    {
+        Box::new(crate::yoga::YogaLayoutEngine::new())
+    }
+    #[cfg(not(feature = "yoga"))]
+    {
+        Box::new(crate::taffy::TaffyLayoutEngine::new())
+    }
 }
