@@ -1,6 +1,8 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
 use crate::layout::{LayoutEngineKind, LayoutMeasureFn, create_layout_engine};
+#[cfg(feature = "yoga")]
+use crate::yoga::YogaLayoutEngine;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
@@ -71,6 +73,27 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
     width: Pixels(900.),
     height: Pixels(750.),
 };
+
+/// Handle returned when windows create standalone Yoga nodes.
+#[cfg(feature = "yoga")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowYogaNode {
+    layout_id: LayoutId,
+    window_id: WindowId,
+}
+
+#[cfg(feature = "yoga")]
+impl WindowYogaNode {
+    /// Identifier of the layout node backing this handle.
+    pub fn layout_id(&self) -> LayoutId {
+        self.layout_id
+    }
+
+    /// Identifier of the window that owns the Yoga node.
+    pub fn window_id(&self) -> WindowId {
+        self.window_id
+    }
+}
 
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
@@ -1322,6 +1345,68 @@ impl Window {
         {
             false
         }
+    }
+
+    #[cfg(feature = "yoga")]
+    fn yoga_layout_engine_mut(&mut self) -> Option<&mut YogaLayoutEngine> {
+        self.layout_engine
+            .as_mut()
+            .and_then(|engine| engine.as_any_mut().downcast_mut::<YogaLayoutEngine>())
+    }
+
+    /// Create a standalone Yoga node associated with this window.
+    #[cfg(feature = "yoga")]
+    pub fn create_yoga_node(&mut self, style: Style) -> Option<WindowYogaNode> {
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        let layout_id =
+            self.yoga_layout_engine_mut()?
+                .create_external_node(style, rem_size, scale_factor);
+        Some(WindowYogaNode {
+            layout_id,
+            window_id: self.handle.window_id(),
+        })
+    }
+
+    /// Remove a Yoga node previously created via [`create_yoga_node`].
+    #[cfg(feature = "yoga")]
+    pub fn remove_yoga_node(&mut self, node: WindowYogaNode) -> bool {
+        if let Some(engine) = self.yoga_layout_engine_mut() {
+            engine.remove_node(node.layout_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update the Yoga style for a node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_style(&mut self, node: WindowYogaNode, style: Style) -> bool {
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_style(node.layout_id, style, rem_size, scale_factor))
+            .unwrap_or(false)
+    }
+
+    /// Replace the children of a Yoga node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_children(&mut self, node: WindowYogaNode, children: &[LayoutId]) -> bool {
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_children(node.layout_id, children))
+            .unwrap_or(false)
+    }
+
+    /// Attach or clear a custom measure callback for a Yoga node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_measure(
+        &mut self,
+        node: WindowYogaNode,
+        measure: Option<LayoutMeasureFn>,
+    ) -> bool {
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_measure(node.layout_id, measure))
+            .unwrap_or(false)
     }
 
     pub(crate) fn new_focus_listener(

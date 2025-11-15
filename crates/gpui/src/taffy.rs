@@ -6,7 +6,7 @@ use crate::{
 };
 use collections::{FxHashMap, FxHashSet};
 use stacksafe::stacksafe;
-use std::{fmt::Debug, ops::Range};
+use std::{any::Any, fmt::Debug, ops::Range};
 use taffy::{
     TaffyTree, TraversePartialTree as _,
     geometry::{Point as TaffyPoint, Rect as TaffyRect, Size as TaffySize},
@@ -330,6 +330,14 @@ impl LayoutEngine for TaffyLayoutEngine {
 
     fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]) {
         TaffyLayoutEngine::apply_external_overrides(self, overrides.iter());
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

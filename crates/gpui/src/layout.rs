@@ -1,5 +1,6 @@
 use crate::{App, Bounds, Pixels, Size, Style, Window};
 use stacksafe::StackSafe;
+use std::any::Any;
 
 /// Type alias for layout measure callbacks stored on layout nodes.
 pub type LayoutMeasureFn = StackSafe<
@@ -98,7 +99,7 @@ impl From<LayoutId> for u64 {
 }
 
 /// Trait implemented by layout backends (Taffy, Yoga, etc.) that GPUI can target.
-pub trait LayoutEngine: 'static {
+pub trait LayoutEngine: Any {
     /// Remove cached state and return the engine to a pristine state.
     fn clear(&mut self);
 
@@ -142,6 +143,12 @@ pub trait LayoutEngine: 'static {
 
     /// Apply a batch of external overrides.
     fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]);
+
+    /// Downcast support so callers can access backend-specific functionality.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Downcast support so callers can access backend-specific functionality.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Identifies which layout backend a window should use.

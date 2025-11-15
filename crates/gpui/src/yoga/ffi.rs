@@ -264,6 +264,11 @@ where
     YogaMeasureHandle(id)
 }
 
+/// Clear any previously-registered measure callback from the node.
+pub fn clear_measure(node: YogaNodeHandle) {
+    unsafe { ffi::yoga_clear_measure(node) }
+}
+
 /// Calculate layout for the node and its descendants.
 pub fn calculate_layout(node: YogaNodeHandle, available: &YogaAvailableSize) {
     unsafe { ffi::yoga_calculate_layout(node, available) }

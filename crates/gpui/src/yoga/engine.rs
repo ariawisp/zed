@@ -1,7 +1,7 @@
 use super::ffi::{
     YogaAvailableDimension, YogaAvailableDimensionKind, YogaAvailableSize, YogaMeasureHandle,
-    YogaMeasureInput, YogaMeasureMode, YogaNodeHandle, YogaSize, calculate_layout, create_node,
-    free_node, layout, set_children, set_measure, set_style,
+    YogaMeasureInput, YogaMeasureMode, YogaNodeHandle, YogaSize, calculate_layout, clear_measure,
+    create_node, free_node, layout, mark_dirty, set_children, set_measure, set_style,
 };
 use super::style_conversion::convert_style_to_yoga;
 use crate::{
@@ -9,8 +9,11 @@ use crate::{
     Size, Style, Window, layout::LayoutMeasureFn,
 };
 use stacksafe::internal;
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::{
+    any::Any,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 // Thread-local context for providing Window and App to measure callbacks.
 //
@@ -72,6 +75,44 @@ impl YogaLayoutEngine {
             external_bounds: HashMap::new(),
             external_styles: HashMap::new(),
         }
+    }
+
+    fn next_layout_id(&mut self) -> LayoutId {
+        let id = LayoutId::from_raw(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    fn allocate_node(
+        &mut self,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+    ) -> (LayoutId, YogaNodeHandle) {
+        let yoga_style = convert_style_to_yoga(&style, rem_size, scale_factor);
+        let node = create_node();
+        set_style(node, &yoga_style);
+        let layout_id = self.next_layout_id();
+        self.nodes.insert(layout_id, node);
+        self.children_map.entry(layout_id).or_insert_with(Vec::new);
+        (layout_id, node)
+    }
+
+    fn apply_children(&mut self, parent: LayoutId, children: &[LayoutId]) -> bool {
+        let Some(&parent_node) = self.nodes.get(&parent) else {
+            return false;
+        };
+        let mut child_nodes = Vec::with_capacity(children.len());
+        for child_id in children {
+            if let Some(&child_node) = self.nodes.get(child_id) {
+                child_nodes.push(child_node);
+            } else {
+                return false;
+            }
+        }
+        set_children(parent_node, &child_nodes);
+        self.children_map.insert(parent, children.to_vec());
+        true
     }
 
     /// Extract layout bounds recursively from Yoga's computed layout.
@@ -167,6 +208,72 @@ impl YogaLayoutEngine {
             })
         }
     }
+
+    /// Allocate a standalone Yoga node that can be managed externally.
+    pub fn create_external_node(
+        &mut self,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+    ) -> LayoutId {
+        let (layout_id, _) = self.allocate_node(style, rem_size, scale_factor);
+        layout_id
+    }
+
+    /// Update the Yoga style for a node and mark it dirty.
+    pub fn set_node_style(
+        &mut self,
+        layout_id: LayoutId,
+        style: Style,
+        rem_size: Pixels,
+        scale_factor: f32,
+    ) -> bool {
+        let Some(&node) = self.nodes.get(&layout_id) else {
+            return false;
+        };
+        let yoga_style = convert_style_to_yoga(&style, rem_size, scale_factor);
+        set_style(node, &yoga_style);
+        mark_dirty(node);
+        true
+    }
+
+    /// Replace the children of a node.
+    pub fn set_node_children(&mut self, layout_id: LayoutId, children: &[LayoutId]) -> bool {
+        if !self.apply_children(layout_id, children) {
+            return false;
+        }
+        if let Some(&node) = self.nodes.get(&layout_id) {
+            mark_dirty(node);
+        }
+        true
+    }
+
+    /// Attach or clear a custom measure callback for the node.
+    pub fn set_node_measure(
+        &mut self,
+        layout_id: LayoutId,
+        measure: Option<LayoutMeasureFn>,
+    ) -> bool {
+        let Some(&node) = self.nodes.get(&layout_id) else {
+            return false;
+        };
+
+        if let Some(handle) = self.measure_handles.remove(&layout_id) {
+            drop(handle);
+            clear_measure(node);
+        }
+        self.measure_functions.remove(&layout_id);
+
+        if let Some(measure_fn) = measure {
+            self.measure_functions.insert(layout_id, measure_fn);
+            let measure_callback = Self::create_measure_callback(layout_id);
+            let measure_handle = set_measure(node, measure_callback);
+            self.measure_handles.insert(layout_id, measure_handle);
+        }
+
+        mark_dirty(node);
+        true
+    }
 }
 
 impl LayoutEngine for YogaLayoutEngine {
@@ -209,27 +316,8 @@ impl LayoutEngine for YogaLayoutEngine {
         scale_factor: f32,
         children: &[LayoutId],
     ) -> LayoutId {
-        // Convert GPUI style to Yoga style
-        let yoga_style = convert_style_to_yoga(&style, rem_size, scale_factor);
-
-        // Create Yoga node
-        let node = create_node();
-        set_style(node, &yoga_style);
-
-        // Set children (convert LayoutIds to YogaNodeHandles)
-        let child_nodes: Vec<YogaNodeHandle> = children
-            .iter()
-            .filter_map(|child_id| self.nodes.get(child_id).copied())
-            .collect();
-        set_children(node, &child_nodes);
-
-        // Generate LayoutId and store mappings
-        let layout_id = LayoutId::from_raw(self.next_id);
-        self.next_id += 1;
-
-        self.nodes.insert(layout_id, node);
-        self.children_map.insert(layout_id, children.to_vec());
-
+        let (layout_id, _) = self.allocate_node(style, rem_size, scale_factor);
+        self.apply_children(layout_id, children);
         layout_id
     }
 
@@ -240,28 +328,9 @@ impl LayoutEngine for YogaLayoutEngine {
         scale_factor: f32,
         measure: LayoutMeasureFn,
     ) -> LayoutId {
-        // Convert GPUI style to Yoga style
-        let yoga_style = convert_style_to_yoga(&style, rem_size, scale_factor);
-
-        // Create Yoga node
-        let node = create_node();
-        set_style(node, &yoga_style);
-
-        // Generate LayoutId first (needed for callback closure)
-        let layout_id = LayoutId::from_raw(self.next_id);
-        self.next_id += 1;
-
-        // Store the measure function for later use
-        self.measure_functions.insert(layout_id, measure);
-
-        // Create and register measure callback
-        let measure_callback = Self::create_measure_callback(layout_id);
-        let measure_handle = set_measure(node, measure_callback);
-
-        self.nodes.insert(layout_id, node);
-        self.measure_handles.insert(layout_id, measure_handle);
-        self.children_map.insert(layout_id, Vec::new());
-
+        let (layout_id, _) = self.allocate_node(style, rem_size, scale_factor);
+        self.apply_children(layout_id, &[]);
+        let _ = self.set_node_measure(layout_id, Some(measure));
         layout_id
     }
 
@@ -363,6 +432,14 @@ impl LayoutEngine for YogaLayoutEngine {
                 self.external_styles.remove(&override_entry.layout_id);
             }
         }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
