@@ -31,6 +31,7 @@ mod ffi;
 mod style_conversion;
 
 pub use engine::YogaLayoutEngine;
+#[allow(unused_imports)]
 pub use ffi::{
     YogaAlign, YogaAvailableDimension, YogaAvailableDimensionKind, YogaAvailableSize, YogaDisplay,
     YogaEdges, YogaFlexDirection, YogaJustify, YogaLayout, YogaMeasureInput, YogaMeasureMode,

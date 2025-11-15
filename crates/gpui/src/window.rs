@@ -1,6 +1,6 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
-use crate::layout::{LayoutMeasureFn, default_layout_engine};
+use crate::layout::{LayoutEngineKind, LayoutMeasureFn, create_layout_engine};
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
@@ -48,7 +48,7 @@ use std::{
     ops::{DerefMut, Range},
     rc::Rc,
     sync::{
-        Arc, Weak,
+        Arc, LazyLock, Mutex, Weak,
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
     time::{Duration, Instant},
@@ -862,6 +862,7 @@ pub struct Window {
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<Box<dyn LayoutEngine>>,
+    layout_engine_kind: LayoutEngineKind,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
@@ -875,6 +876,7 @@ pub struct Window {
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    pending_external_overrides: Arc<Mutex<Vec<ExternalLayoutOverride>>>,
     next_hitbox_id: HitboxId,
     next_scroll_container_id: u64,
     pub(crate) next_tooltip_id: TooltipId,
@@ -982,6 +984,7 @@ impl Window {
             window_decorations,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
+            layout_engine,
         } = options;
 
         let bounds = window_bounds
@@ -1020,6 +1023,8 @@ impl Window {
         let scale_factor = platform_window.scale_factor();
         let appearance = platform_window.appearance();
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
+        let pending_external_overrides = Arc::new(Mutex::new(Vec::new()));
+        register_external_override_queue(handle.window_id(), pending_external_overrides.clone());
         let invalidator = WindowInvalidator::new();
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
@@ -1250,7 +1255,8 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
-            layout_engine: Some(default_layout_engine()),
+            layout_engine: Some(create_layout_engine(layout_engine)),
+            layout_engine_kind: layout_engine,
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
@@ -1263,6 +1269,7 @@ impl Window {
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+            pending_external_overrides,
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
             next_scroll_container_id: 1,
@@ -1298,6 +1305,23 @@ impl Window {
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
+    }
+
+    /// Returns the layout engine configured for this window.
+    pub fn layout_engine_kind(&self) -> LayoutEngineKind {
+        self.layout_engine_kind
+    }
+
+    /// Returns true when the window is backed by Yoga rather than Taffy.
+    pub fn uses_yoga_layout(&self) -> bool {
+        #[cfg(feature = "yoga")]
+        {
+            matches!(self.layout_engine_kind, LayoutEngineKind::Yoga)
+        }
+        #[cfg(not(feature = "yoga"))]
+        {
+            false
+        }
     }
 
     pub(crate) fn new_focus_listener(
@@ -1416,6 +1440,7 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+        unregister_external_override_queue(self.handle.window_id());
         clear_global_snapshots(self.handle.window_id());
     }
 
@@ -1973,6 +1998,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        self.drain_external_overrides();
         self.invalidate_entities();
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
@@ -2039,6 +2065,31 @@ impl Window {
         self.needs_present.set(true);
 
         ArenaClearNeeded
+    }
+
+    fn drain_external_overrides(&mut self) {
+        let overrides = {
+            let mut queue = self
+                .pending_external_overrides
+                .lock()
+                .expect("pending overrides mutex poisoned");
+            if queue.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *queue)
+        };
+
+        let window_id = self.handle.window_id();
+        self.apply_external_layout_overrides(&overrides);
+        for entry in overrides.iter() {
+            self.record_external_node_snapshot(entry.layout_id, entry.bounds, entry.bounds);
+        }
+        log::trace!(
+            target: "gpui.window",
+            "drained {} external layout overrides during draw for {:?}",
+            overrides.len(),
+            window_id
+        );
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
@@ -3430,6 +3481,20 @@ impl Window {
             .as_mut()
             .unwrap()
             .apply_external_overrides(overrides);
+    }
+
+    /// Queue externally-computed layout overrides. These are applied the next
+    /// time the window drains its pending overrides (e.g., at the start of a
+    /// frame) so callers do not need `&mut Window`.
+    pub fn enqueue_external_layout_overrides(
+        &self,
+        overrides: impl IntoIterator<Item = ExternalLayoutOverride>,
+    ) {
+        let mut queue = self
+            .pending_external_overrides
+            .lock()
+            .expect("pending overrides mutex poisoned");
+        queue.extend(overrides);
     }
 
     /// Persist a node snapshot for the current frame.
@@ -4889,6 +4954,46 @@ impl Window {
     }
 }
 
+fn register_external_override_queue(
+    window_id: WindowId,
+    queue: Arc<Mutex<Vec<ExternalLayoutOverride>>>,
+) {
+    EXTERNAL_OVERRIDE_REGISTRY
+        .lock()
+        .expect("external override registry poisoned")
+        .insert(window_id.as_u64(), queue);
+}
+
+fn unregister_external_override_queue(window_id: WindowId) {
+    EXTERNAL_OVERRIDE_REGISTRY
+        .lock()
+        .expect("external override registry poisoned")
+        .remove(&window_id.as_u64());
+}
+
+fn external_override_queue(window_id: WindowId) -> Option<Arc<Mutex<Vec<ExternalLayoutOverride>>>> {
+    EXTERNAL_OVERRIDE_REGISTRY
+        .lock()
+        .expect("external override registry poisoned")
+        .get(&window_id.as_u64())
+        .cloned()
+}
+
+/// Queue externally-computed layout overrides for the given window.
+/// Returns `true` if the window is still alive and the overrides were queued.
+pub fn enqueue_external_layout_overrides_for_window(
+    window_id: WindowId,
+    overrides: impl IntoIterator<Item = ExternalLayoutOverride>,
+) -> bool {
+    if let Some(queue) = external_override_queue(window_id) {
+        let mut guard = queue.lock().expect("pending overrides mutex poisoned");
+        guard.extend(overrides);
+        true
+    } else {
+        false
+    }
+}
+
 // #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 slotmap::new_key_type! {
     /// A unique identifier for a window.
@@ -5366,3 +5471,6 @@ pub fn outline(
         border_style,
     }
 }
+static EXTERNAL_OVERRIDE_REGISTRY: LazyLock<
+    Mutex<FxHashMap<u64, Arc<Mutex<Vec<ExternalLayoutOverride>>>>>,
+> = LazyLock::new(|| Mutex::new(FxHashMap::default()));

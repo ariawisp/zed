@@ -463,6 +463,7 @@ mod windows {
 #[cfg(feature = "yoga")]
 fn build_yoga_bridge() {
     use std::path::PathBuf;
+    use walkdir::WalkDir;
 
     // Tell cargo to rebuild if C++ files change
     println!("cargo:rerun-if-changed=yoga_bridge/YogaBridge.h");
@@ -481,10 +482,22 @@ fn build_yoga_bridge() {
     }
 
     // Use cxx-build to compile the Yoga bridge
-    cxx_build::bridge("src/yoga/ffi.rs")
-        .file("yoga_bridge/YogaBridge.cpp")
+    let mut builder = cxx_build::bridge("src/yoga/ffi.rs");
+    builder.file("yoga_bridge/YogaBridge.cpp");
+
+    // Compile Yoga sources directly into the bridge library so we have the core implementation.
+    let yoga_source_root = yoga_include.join("yoga");
+    for entry in WalkDir::new(&yoga_source_root) {
+        let entry = entry.expect("failed to walk Yoga sources");
+        if entry.file_type().is_file() && entry.path().extension().map_or(false, |ext| ext == "cpp")
+        {
+            builder.file(entry.path());
+        }
+    }
+
+    builder
         .include(&yoga_include)
-        .std("c++17")
-        .flag_if_supported("-w") // Suppress warnings from Yoga
+        .std("c++20")
+        .flag_if_supported("-w")
         .compile("gpui_yoga_bridge");
 }

@@ -256,6 +256,7 @@ util = { workspace = true, features = ["test-support"] }
 
 [build-dependencies]
 cxx-build = "1"
+walkdir = "2"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3.0"

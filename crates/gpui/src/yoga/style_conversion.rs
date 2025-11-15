@@ -299,10 +299,10 @@ mod tests {
     fn test_convert_rem_to_pixels() {
         let style = Style {
             padding: Edges {
-                top: DefiniteLength::Absolute(AbsoluteLength::Rems(1.0)),
-                left: DefiniteLength::Absolute(AbsoluteLength::Rems(1.0)),
-                right: DefiniteLength::Absolute(AbsoluteLength::Rems(1.0)),
-                bottom: DefiniteLength::Absolute(AbsoluteLength::Rems(1.0)),
+                top: DefiniteLength::Absolute(AbsoluteLength::Rems(crate::geometry::Rems(1.0))),
+                left: DefiniteLength::Absolute(AbsoluteLength::Rems(crate::geometry::Rems(1.0))),
+                right: DefiniteLength::Absolute(AbsoluteLength::Rems(crate::geometry::Rems(1.0))),
+                bottom: DefiniteLength::Absolute(AbsoluteLength::Rems(crate::geometry::Rems(1.0))),
             },
             ..Default::default()
         };

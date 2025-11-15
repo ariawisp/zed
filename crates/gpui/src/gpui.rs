@@ -43,14 +43,14 @@ mod subscription;
 mod svg_renderer;
 mod tab_stop;
 mod taffy;
-#[cfg(feature = "yoga")]
-mod yoga;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 mod text_system;
 mod util;
 mod view;
 mod window;
+#[cfg(feature = "yoga")]
+mod yoga;
 
 #[cfg(doc)]
 pub mod _ownership_and_data_flow;
@@ -91,7 +91,9 @@ pub use inspector::*;
 pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
-pub use layout::{AvailableSpace, ExternalLayoutOverride, LayoutEngine, LayoutId};
+pub use layout::{
+    AvailableSpace, ExternalLayoutOverride, LayoutEngine, LayoutEngineKind, LayoutId,
+};
 pub use node_geometry::*;
 pub use path_builder::*;
 pub use platform::*;

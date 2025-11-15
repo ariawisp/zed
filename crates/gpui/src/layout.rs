@@ -144,14 +144,32 @@ pub trait LayoutEngine: 'static {
     fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]);
 }
 
+/// Identifies which layout backend a window should use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayoutEngineKind {
+    /// Use the default Taffy flexbox implementation.
+    Taffy,
+    /// Use Facebook's Yoga layout engine. Available only when the `yoga` feature is enabled.
+    #[cfg(feature = "yoga")]
+    Yoga,
+}
+
+impl Default for LayoutEngineKind {
+    fn default() -> Self {
+        LayoutEngineKind::Taffy
+    }
+}
+
+/// Create a layout engine of the requested kind.
+pub(crate) fn create_layout_engine(kind: LayoutEngineKind) -> Box<dyn LayoutEngine> {
+    match kind {
+        LayoutEngineKind::Taffy => Box::new(crate::taffy::TaffyLayoutEngine::new()),
+        #[cfg(feature = "yoga")]
+        LayoutEngineKind::Yoga => Box::new(crate::yoga::YogaLayoutEngine::new()),
+    }
+}
+
 /// Create the default layout engine used by Windows.
 pub(crate) fn default_layout_engine() -> Box<dyn LayoutEngine> {
-    #[cfg(feature = "yoga")]
-    {
-        Box::new(crate::yoga::YogaLayoutEngine::new())
-    }
-    #[cfg(not(feature = "yoga"))]
-    {
-        Box::new(crate::taffy::TaffyLayoutEngine::new())
-    }
+    create_layout_engine(LayoutEngineKind::default())
 }

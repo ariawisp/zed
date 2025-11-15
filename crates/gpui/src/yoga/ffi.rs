@@ -2,6 +2,7 @@
 //!
 //! This module provides Rust bindings to Facebook's Yoga flexbox layout engine
 //! via C++ FFI using the CXX crate.
+#![allow(unused_unsafe)]
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;

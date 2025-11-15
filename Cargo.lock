@@ -7341,6 +7341,7 @@ dependencies = [
  "util_macros",
  "uuid",
  "waker-fn",
+ "walkdir",
  "wayland-backend",
  "wayland-client",
  "wayland-cursor",
