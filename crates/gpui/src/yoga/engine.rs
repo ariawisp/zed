@@ -5,8 +5,8 @@ use super::ffi::{
 };
 use super::style_conversion::convert_style_to_yoga;
 use crate::{
-    App, AvailableSpace, Bounds, ExternalLayoutOverride, LayoutEngine, LayoutId, Pixels, Point,
-    Size, Style, Window, layout::LayoutMeasureFn,
+    App, AvailableSpace, Bounds, LayoutEngine, LayoutId, Pixels, Point, Size, Style, Window,
+    layout::LayoutMeasureFn,
 };
 use stacksafe::internal;
 use std::{
@@ -55,12 +55,6 @@ pub struct YogaLayoutEngine {
 
     /// Track GPUI measure functions for nodes that need custom measurement
     measure_functions: HashMap<LayoutId, LayoutMeasureFn>,
-
-    /// Store external bounds overrides (for React Native integration)
-    external_bounds: HashMap<LayoutId, Bounds<Pixels>>,
-
-    /// Style metadata tracked for overrides so RN tags can mirror Taffy
-    external_styles: HashMap<LayoutId, Style>,
 }
 
 impl YogaLayoutEngine {
@@ -72,8 +66,6 @@ impl YogaLayoutEngine {
             children_map: HashMap::new(),
             measure_handles: HashMap::new(),
             measure_functions: HashMap::new(),
-            external_bounds: HashMap::new(),
-            external_styles: HashMap::new(),
         }
     }
 
@@ -292,8 +284,6 @@ impl LayoutEngine for YogaLayoutEngine {
         self.children_map.clear();
         self.measure_handles.clear();
         self.measure_functions.clear();
-        self.external_bounds.clear();
-        self.external_styles.clear();
         self.next_id = 1;
     }
 
@@ -304,8 +294,6 @@ impl LayoutEngine for YogaLayoutEngine {
             self.children_map.remove(&layout_id);
             self.measure_handles.remove(&layout_id);
             self.measure_functions.remove(&layout_id);
-            self.external_bounds.remove(&layout_id);
-            self.external_styles.remove(&layout_id);
         }
     }
 
@@ -401,37 +389,10 @@ impl LayoutEngine for YogaLayoutEngine {
         let scale_factor = window.scale_factor();
         self.extract_bounds_recursive(id, Point::default(), scale_factor);
 
-        // Apply external overrides if any
-        for (layout_id, bounds) in &self.external_bounds {
-            self.computed_bounds.insert(*layout_id, *bounds);
-        }
     }
 
     fn layout_bounds(&mut self, id: LayoutId, _scale_factor: f32) -> Bounds<Pixels> {
-        // Check external override first (for React Native integration)
-        if let Some(&bounds) = self.external_bounds.get(&id) {
-            return bounds;
-        }
-
-        // Otherwise return computed bounds
         self.computed_bounds.get(&id).copied().unwrap_or_default()
-    }
-
-    fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
-        self.external_bounds.insert(id, bounds);
-    }
-
-    fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]) {
-        for override_entry in overrides {
-            self.external_bounds
-                .insert(override_entry.layout_id, override_entry.bounds);
-            if let Some(style) = &override_entry.style {
-                self.external_styles
-                    .insert(override_entry.layout_id, style.clone());
-            } else {
-                self.external_styles.remove(&override_entry.layout_id);
-            }
-        }
     }
 
     fn as_any(&self) -> &dyn Any {

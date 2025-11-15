@@ -1,7 +1,7 @@
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Edges, LayoutEngine, LayoutId, Length, Pixels,
     Point, Size, Style, Window,
-    layout::{AvailableSpace, ExternalLayoutOverride, LayoutMeasureFn},
+    layout::{AvailableSpace, LayoutMeasureFn},
     point, size,
 };
 use collections::{FxHashMap, FxHashSet};
@@ -21,7 +21,6 @@ struct NodeContext {
 pub struct TaffyLayoutEngine {
     taffy: TaffyTree<NodeContext>,
     absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
-    external_styles: FxHashMap<LayoutId, Style>,
     computed_layouts: FxHashSet<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
     node_id_scratch: Vec<NodeId>,
@@ -36,7 +35,6 @@ impl TaffyLayoutEngine {
         TaffyLayoutEngine {
             taffy,
             absolute_layout_bounds: FxHashMap::default(),
-            external_styles: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             layout_bounds_scratch_space: Vec::new(),
             node_id_scratch: Vec::new(),
@@ -46,36 +44,8 @@ impl TaffyLayoutEngine {
     pub fn clear(&mut self) {
         self.taffy.clear();
         self.absolute_layout_bounds.clear();
-        self.external_styles.clear();
         self.computed_layouts.clear();
         self.node_id_scratch.clear();
-    }
-
-    /// Override the computed layout bounds for a given node for this frame.
-    ///
-    /// Embedders that integrate an external layout engine (e.g., React Native's Yoga)
-    /// can call this to provide absolute, window-relative bounds for a layout node.
-    /// When present, `layout_bounds` will return these bounds instead of querying Taffy.
-    pub fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
-        self.absolute_layout_bounds.insert(id, bounds);
-    }
-
-    /// Apply a batch of externally-computed layout overrides.
-    ///
-    /// Each override contains absolute bounds along with optional style metadata that
-    /// should be associated with the node for the current frame.
-    pub fn apply_external_overrides<'a>(
-        &mut self,
-        overrides: impl IntoIterator<Item = &'a ExternalLayoutOverride>,
-    ) {
-        for override_entry in overrides {
-            self.absolute_layout_bounds
-                .insert(override_entry.layout_id, override_entry.bounds);
-            if let Some(style) = &override_entry.style {
-                self.external_styles
-                    .insert(override_entry.layout_id, style.clone());
-            }
-        }
     }
 
     pub fn request_layout(
@@ -285,7 +255,6 @@ impl LayoutEngine for TaffyLayoutEngine {
     fn remove_node(&mut self, layout_id: LayoutId) {
         if self.taffy.remove(layout_id.into()).is_ok() {
             self.absolute_layout_bounds.remove(&layout_id);
-            self.external_styles.remove(&layout_id);
             self.computed_layouts.remove(&layout_id);
         }
     }
@@ -322,14 +291,6 @@ impl LayoutEngine for TaffyLayoutEngine {
 
     fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels> {
         TaffyLayoutEngine::layout_bounds(self, id, scale_factor)
-    }
-
-    fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>) {
-        TaffyLayoutEngine::set_external_bounds(self, id, bounds);
-    }
-
-    fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]) {
-        TaffyLayoutEngine::apply_external_overrides(self, overrides.iter());
     }
 
     fn as_any(&self) -> &dyn Any {

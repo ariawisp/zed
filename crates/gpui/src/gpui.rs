@@ -91,9 +91,7 @@ pub use inspector::*;
 pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
-pub use layout::{
-    AvailableSpace, ExternalLayoutOverride, LayoutEngine, LayoutEngineKind, LayoutId,
-};
+pub use layout::{AvailableSpace, LayoutEngine, LayoutEngineKind, LayoutId};
 pub use node_geometry::*;
 pub use path_builder::*;
 pub use platform::*;

@@ -14,22 +14,6 @@ pub type LayoutMeasureFn = StackSafe<
     >,
 >;
 
-/// Represents an externally-computed layout override for a node in the layout tree.
-///
-/// External embedders (e.g., React Native) can provide authoritative layout information
-/// for specific [`LayoutId`]s. During commit processing, a batch of overrides can be
-/// pushed into the layout engine so subsequent GPUI layout queries observe the
-/// externally-computed bounds and style metadata.
-#[derive(Clone, Debug)]
-pub struct ExternalLayoutOverride {
-    /// The layout node to override.
-    pub layout_id: LayoutId,
-    /// Absolute, window-relative bounds for the node.
-    pub bounds: Bounds<Pixels>,
-    /// Optional style metadata describing padding/margin/etc for the node.
-    pub style: Option<Style>,
-}
-
 /// The space available for an element to be laid out in
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub enum AvailableSpace {
@@ -137,12 +121,6 @@ pub trait LayoutEngine: Any {
 
     /// Fetch the computed bounds for a node.
     fn layout_bounds(&mut self, id: LayoutId, scale_factor: f32) -> Bounds<Pixels>;
-
-    /// Override the computed bounds for a node.
-    fn set_external_bounds(&mut self, id: LayoutId, bounds: Bounds<Pixels>);
-
-    /// Apply a batch of external overrides.
-    fn apply_external_overrides(&mut self, overrides: &[ExternalLayoutOverride]);
 
     /// Downcast support so callers can access backend-specific functionality.
     fn as_any(&self) -> &dyn Any;
