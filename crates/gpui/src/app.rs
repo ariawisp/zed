@@ -980,6 +980,13 @@ impl App {
             .collect()
     }
 
+    /// Returns true if a window update is currently executing on the stack.
+    /// Useful for callers that might otherwise reenter `update_window_id` and
+    /// trigger nested `AnyWindowHandle::update` errors.
+    pub fn is_window_update_in_progress(&self) -> bool {
+        !self.window_update_stack.is_empty()
+    }
+
     /// Returns the window handles ordered by their appearance on screen, front to back.
     ///
     /// The first window in the returned list is the active/topmost window of the application.

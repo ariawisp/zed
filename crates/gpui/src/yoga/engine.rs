@@ -75,6 +75,11 @@ impl YogaLayoutEngine {
         id
     }
 
+    /// Get the raw Yoga node handle for a layout ID
+    pub(crate) fn node_handle(&self, layout_id: LayoutId) -> Option<YogaNodeHandle> {
+        self.nodes.get(&layout_id).copied()
+    }
+
     fn allocate_node(
         &mut self,
         style: Style,
@@ -225,7 +230,9 @@ impl YogaLayoutEngine {
         };
         let yoga_style = convert_style_to_yoga(&style, rem_size, scale_factor);
         set_style(node, &yoga_style);
-        mark_dirty(node);
+        if self.measure_functions.contains_key(&layout_id) {
+            mark_dirty(node);
+        }
         true
     }
 
@@ -235,7 +242,9 @@ impl YogaLayoutEngine {
             return false;
         }
         if let Some(&node) = self.nodes.get(&layout_id) {
-            mark_dirty(node);
+            if self.measure_functions.contains_key(&layout_id) {
+                mark_dirty(node);
+            }
         }
         true
     }
@@ -261,9 +270,12 @@ impl YogaLayoutEngine {
             let measure_callback = Self::create_measure_callback(layout_id);
             let measure_handle = set_measure(node, measure_callback);
             self.measure_handles.insert(layout_id, measure_handle);
+            mark_dirty(node);
+        } else {
+            self.measure_handles.remove(&layout_id);
+            self.measure_functions.remove(&layout_id);
         }
 
-        mark_dirty(node);
         true
     }
 }
@@ -274,6 +286,14 @@ impl LayoutEngine for YogaLayoutEngine {
         for children in self.children_map.values() {
             child_ids.extend(children.iter().copied());
         }
+
+        // CRITICAL: Clear all Yoga node children BEFORE freeing to prevent use-after-free.
+        // This breaks any cycles and prevents release_measure_recursive from following
+        // dangling pointers during cleanup.
+        for node in self.nodes.values() {
+            set_children(*node, &[]);
+        }
+
         for (id, node) in self.nodes.drain() {
             if child_ids.contains(&id) {
                 continue;
@@ -333,7 +353,9 @@ impl LayoutEngine for YogaLayoutEngine {
             return;
         };
 
-        self.computed_bounds.clear();
+        // NOTE: Don't clear computed_bounds here! Multiple elements compute layout per frame
+        // (root, tooltips, inspector, etc.). Clearing here destroys previous layouts.
+        // The HashMap gets properly cleared at end of frame via LayoutEngine::clear().
 
         // Convert GPUI AvailableSpace to Yoga's format
         let yoga_available = YogaAvailableSize {

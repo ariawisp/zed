@@ -49,7 +49,7 @@ use std::{
     mem,
     ops::{DerefMut, Range},
     rc::Rc,
-    sync::{Arc, Weak, atomic::{AtomicUsize, Ordering::SeqCst}},
+    sync::{Arc, OnceLock, Weak, atomic::{AtomicUsize, Ordering::SeqCst}},
     time::{Duration, Instant},
 };
 use util::post_inc;
@@ -76,6 +76,29 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
 pub struct WindowYogaNode {
     layout_id: LayoutId,
     window_id: WindowId,
+}
+
+#[cfg(feature = "yoga")]
+type LayoutEngineClearHook = fn(WindowId, &mut App);
+
+#[cfg(feature = "yoga")]
+static LAYOUT_ENGINE_CLEAR_HOOK: OnceLock<LayoutEngineClearHook> = OnceLock::new();
+
+#[cfg(feature = "yoga")]
+fn invoke_layout_engine_clear_hook(window_id: WindowId, cx: &mut App) {
+    if let Some(hook) = LAYOUT_ENGINE_CLEAR_HOOK.get() {
+        hook(window_id, cx);
+    }
+}
+
+#[cfg(feature = "yoga")]
+/// Register a callback that is invoked whenever the Yoga layout engine is cleared for a window.
+pub fn set_layout_engine_clear_hook(
+    hook: LayoutEngineClearHook,
+) -> std::result::Result<(), &'static str> {
+    LAYOUT_ENGINE_CLEAR_HOOK
+        .set(hook)
+        .map_err(|_| "layout engine clear hook already set")
 }
 
 #[cfg(feature = "yoga")]
@@ -1360,6 +1383,13 @@ impl Window {
         })
     }
 
+    /// Get the raw Yoga node handle for a window node.
+    #[cfg(feature = "yoga")]
+    pub fn yoga_node_handle(&self, node: WindowYogaNode) -> Option<crate::yoga::YogaNodeHandle> {
+        let engine = self.layout_engine.as_ref()?;
+        engine.as_any().downcast_ref::<crate::yoga::YogaLayoutEngine>()?.node_handle(node.layout_id)
+    }
+
     /// Remove a Yoga node previously created via [`create_yoga_node`].
     #[cfg(feature = "yoga")]
     pub fn remove_yoga_node(&mut self, node: WindowYogaNode) -> bool {
@@ -2094,6 +2124,8 @@ impl Window {
                 .set_input_handler(input_handler.unwrap());
         }
 
+        #[cfg(feature = "yoga")]
+        invoke_layout_engine_clear_hook(self.handle.window_id(), cx);
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);

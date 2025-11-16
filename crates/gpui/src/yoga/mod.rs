@@ -36,5 +36,5 @@ pub use ffi::{
     YogaAlign, YogaAvailableDimension, YogaAvailableDimensionKind, YogaAvailableSize, YogaDisplay,
     YogaEdges, YogaFlexDirection, YogaJustify, YogaLayout, YogaMeasureInput, YogaMeasureMode,
     YogaNodeHandle, YogaOverflow, YogaPositionType, YogaSize, YogaStyle, YogaStyleSize, YogaValue,
-    YogaValueUnit, YogaWrap,
+    YogaValueUnit, YogaWrap, free_node, set_children,
 };

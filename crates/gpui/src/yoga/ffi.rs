@@ -13,8 +13,13 @@ use std::{
 
 #[cxx::bridge(namespace = "gpui::yoga")]
 mod ffi {
+    /// An opaque handle to a C++ Yoga node.
+    ///
+    /// This handle is owned by React Native and must be explicitly freed
+    /// using `free_node()` when no longer needed.
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     pub struct YogaNodeHandle {
+        /// The raw handle value from the C++ side.
         pub raw: u64,
     }
 

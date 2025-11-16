@@ -52,6 +52,10 @@ mod window;
 #[cfg(feature = "yoga")]
 mod yoga;
 
+// Re-export just what React Native needs
+#[cfg(feature = "yoga")]
+pub use yoga::{free_node, set_children, YogaNodeHandle};
+
 #[cfg(doc)]
 pub mod _ownership_and_data_flow;
 
