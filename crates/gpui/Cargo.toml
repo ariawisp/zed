@@ -30,6 +30,7 @@ test-support = [
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
 runtime_shaders = []
+yoga = ["cxx"]
 macos-blade = [
     "blade-graphics",
     "blade-macros",
@@ -88,6 +89,7 @@ doctest = false
 anyhow.workspace = true
 async-task = "4.7"
 backtrace = { workspace = true, optional = true }
+cxx = { version = "1", optional = true }
 bitflags = { workspace = true, optional = true }
 blade-graphics = { workspace = true, optional = true }
 blade-macros = { workspace = true, optional = true }
@@ -138,6 +140,7 @@ waker-fn = "1.2.0"
 lyon = "1.0"
 libc.workspace = true
 pin-project = "1.1.10"
+once_cell = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block = "0.1"
@@ -250,6 +253,10 @@ rand.workspace = true
 reqwest_client = { workspace = true, features = ["test-support"] }
 unicode-segmentation.workspace = true
 util = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+cxx-build = "1"
+walkdir = "2"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3.0"

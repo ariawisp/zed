@@ -1,22 +1,27 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
+use crate::layout::{LayoutEngineKind, LayoutMeasureFn, create_layout_engine};
+#[cfg(feature = "yoga")]
+use crate::yoga::YogaLayoutEngine;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
     Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
     FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
-    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, PromptButton, PromptLevel, Quad,
-    Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
-    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
+    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutEngine,
+    LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton,
+    MouseEvent, MouseMoveEvent, MouseUpEvent, NodeGeometryStore, NodeSnapshot, Path, Pixels,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+    PolychromeSprite, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
+    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, ScrollContainerId, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
+    SystemWindowTabController, TabStopMap, Task, TextStyle, TextStyleRefinement,
     TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    clear_global_snapshots, ensure_node_geometry_service, point, prelude::*, px,
+    record_global_snapshot, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -32,6 +37,7 @@ use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use refineable::Refineable;
 use slotmap::SlotMap;
 use smallvec::SmallVec;
+use stacksafe::StackSafe;
 use std::{
     any::{Any, TypeId},
     borrow::Cow,
@@ -43,10 +49,7 @@ use std::{
     mem,
     ops::{DerefMut, Range},
     rc::Rc,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicUsize, Ordering::SeqCst},
-    },
+    sync::{Arc, OnceLock, Weak, atomic::{AtomicUsize, Ordering::SeqCst}},
     time::{Duration, Instant},
 };
 use util::post_inc;
@@ -66,6 +69,50 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
     width: Pixels(900.),
     height: Pixels(750.),
 };
+
+/// Handle returned when windows create standalone Yoga nodes.
+#[cfg(feature = "yoga")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowYogaNode {
+    layout_id: LayoutId,
+    window_id: WindowId,
+}
+
+#[cfg(feature = "yoga")]
+type LayoutEngineClearHook = fn(WindowId, &mut App);
+
+#[cfg(feature = "yoga")]
+static LAYOUT_ENGINE_CLEAR_HOOK: OnceLock<LayoutEngineClearHook> = OnceLock::new();
+
+#[cfg(feature = "yoga")]
+fn invoke_layout_engine_clear_hook(window_id: WindowId, cx: &mut App) {
+    if let Some(hook) = LAYOUT_ENGINE_CLEAR_HOOK.get() {
+        hook(window_id, cx);
+    }
+}
+
+#[cfg(feature = "yoga")]
+/// Register a callback that is invoked whenever the Yoga layout engine is cleared for a window.
+pub fn set_layout_engine_clear_hook(
+    hook: LayoutEngineClearHook,
+) -> std::result::Result<(), &'static str> {
+    LAYOUT_ENGINE_CLEAR_HOOK
+        .set(hook)
+        .map_err(|_| "layout engine clear hook already set")
+}
+
+#[cfg(feature = "yoga")]
+impl WindowYogaNode {
+    /// Identifier of the layout node backing this handle.
+    pub fn layout_id(&self) -> LayoutId {
+        self.layout_id
+    }
+
+    /// Identifier of the window that owns the Yoga node.
+    pub fn window_id(&self) -> WindowId {
+        self.window_id
+    }
+}
 
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
@@ -475,10 +522,14 @@ pub(crate) struct CursorStyleRequest {
     pub(crate) style: CursorStyle,
 }
 
-#[derive(Default, Eq, PartialEq)]
-pub(crate) struct HitTest {
-    pub(crate) ids: SmallVec<[HitboxId; 8]>,
-    pub(crate) hover_hitbox_count: usize,
+/// Result of hit testing at a point. Contains all hitbox IDs at that position in paint order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HitTest {
+    /// Hitbox IDs at the tested position, in paint order (front to back).
+    pub ids: SmallVec<[HitboxId; 8]>,
+    /// Number of hitboxes that should be considered for hover. This excludes hitboxes
+    /// behind elements with `HitboxBehavior::BlockMouseExceptScroll`.
+    pub hover_hitbox_count: usize,
 }
 
 /// A type of window control area that corresponds to the platform window.
@@ -681,6 +732,10 @@ pub(crate) struct Frame {
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
+    /// Generic metadata storage for hitboxes. Allows attaching custom data to hitboxes
+    /// that can be retrieved during hit testing. Used by embedders like React Native.
+    pub(crate) hitbox_metadata: FxHashMap<HitboxId, Box<dyn Any + Send + Sync>>,
+    pub(crate) node_geometry: NodeGeometryStore,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
@@ -727,6 +782,8 @@ impl Frame {
             scene: Scene::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
+            hitbox_metadata: FxHashMap::default(),
+            node_geometry: NodeGeometryStore::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
@@ -755,6 +812,8 @@ impl Frame {
         self.cursor_styles.clear();
         self.hitboxes.clear();
         self.window_control_hitboxes.clear();
+        self.hitbox_metadata.clear();
+        self.node_geometry.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
@@ -844,19 +903,23 @@ pub struct Window {
     /// a given rem size.
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
-    layout_engine: Option<TaffyLayoutEngine>,
+    layout_engine: Option<Box<dyn LayoutEngine>>,
+    layout_engine_kind: LayoutEngineKind,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+    scroll_container_stack: SmallVec<[ScrollContainerId; 8]>,
     pub(crate) element_opacity: f32,
+    pub(crate) transformation_stack: Vec<crate::TransformationMatrix>,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
     next_hitbox_id: HitboxId,
+    next_scroll_container_id: u64,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
@@ -962,6 +1025,7 @@ impl Window {
             window_decorations,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
+            layout_engine,
         } = options;
 
         let bounds = window_bounds
@@ -1217,6 +1281,7 @@ impl Window {
         }
 
         platform_window.map_window().unwrap();
+        ensure_node_geometry_service(cx);
 
         Ok(Window {
             handle,
@@ -1229,19 +1294,23 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
-            layout_engine: Some(TaffyLayoutEngine::new()),
+            layout_engine: Some(create_layout_engine(layout_engine)),
+            layout_engine_kind: layout_engine,
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
+            scroll_container_stack: SmallVec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            transformation_stack: Vec::new(),
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
+            next_scroll_container_id: 1,
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
             dirty_views: FxHashSet::default(),
@@ -1274,6 +1343,92 @@ impl Window {
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
+    }
+
+    /// Returns the layout engine configured for this window.
+    pub fn layout_engine_kind(&self) -> LayoutEngineKind {
+        self.layout_engine_kind
+    }
+
+    /// Returns true when the window is backed by Yoga rather than Taffy.
+    pub fn uses_yoga_layout(&self) -> bool {
+        #[cfg(feature = "yoga")]
+        {
+            matches!(self.layout_engine_kind, LayoutEngineKind::Yoga)
+        }
+        #[cfg(not(feature = "yoga"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(feature = "yoga")]
+    fn yoga_layout_engine_mut(&mut self) -> Option<&mut YogaLayoutEngine> {
+        self.layout_engine
+            .as_mut()
+            .and_then(|engine| engine.as_any_mut().downcast_mut::<YogaLayoutEngine>())
+    }
+
+    /// Create a standalone Yoga node associated with this window.
+    #[cfg(feature = "yoga")]
+    pub fn create_yoga_node(&mut self, style: Style) -> Option<WindowYogaNode> {
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        let layout_id =
+            self.yoga_layout_engine_mut()?
+                .create_external_node(style, rem_size, scale_factor);
+        Some(WindowYogaNode {
+            layout_id,
+            window_id: self.handle.window_id(),
+        })
+    }
+
+    /// Get the raw Yoga node handle for a window node.
+    #[cfg(feature = "yoga")]
+    pub fn yoga_node_handle(&self, node: WindowYogaNode) -> Option<crate::yoga::YogaNodeHandle> {
+        let engine = self.layout_engine.as_ref()?;
+        engine.as_any().downcast_ref::<crate::yoga::YogaLayoutEngine>()?.node_handle(node.layout_id)
+    }
+
+    /// Remove a Yoga node previously created via [`create_yoga_node`].
+    #[cfg(feature = "yoga")]
+    pub fn remove_yoga_node(&mut self, node: WindowYogaNode) -> bool {
+        if let Some(engine) = self.yoga_layout_engine_mut() {
+            engine.remove_node(node.layout_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update the Yoga style for a node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_style(&mut self, node: WindowYogaNode, style: Style) -> bool {
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_style(node.layout_id, style, rem_size, scale_factor))
+            .unwrap_or(false)
+    }
+
+    /// Replace the children of a Yoga node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_children(&mut self, node: WindowYogaNode, children: &[LayoutId]) -> bool {
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_children(node.layout_id, children))
+            .unwrap_or(false)
+    }
+
+    /// Attach or clear a custom measure callback for a Yoga node.
+    #[cfg(feature = "yoga")]
+    pub fn set_yoga_node_measure(
+        &mut self,
+        node: WindowYogaNode,
+        measure: Option<LayoutMeasureFn>,
+    ) -> bool {
+        self.yoga_layout_engine_mut()
+            .map(|engine| engine.set_node_measure(node.layout_id, measure))
+            .unwrap_or(false)
     }
 
     pub(crate) fn new_focus_listener(
@@ -1376,6 +1531,11 @@ impl Window {
         self.handle
     }
 
+    /// Returns the unique identifier for this window.
+    pub fn window_id(&self) -> WindowId {
+        self.handle.window_id()
+    }
+
     /// Mark the window as dirty, scheduling it to be redrawn on the next frame.
     pub fn refresh(&mut self) {
         if self.invalidator.not_drawing() {
@@ -1387,6 +1547,7 @@ impl Window {
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
+        clear_global_snapshots(self.handle.window_id());
     }
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
@@ -1690,6 +1851,17 @@ impl Window {
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
 
+        // Update global window metrics cache and notify observers.
+        crate::environment::set_window_metrics(
+            cx,
+            crate::environment::WindowMetrics {
+                width: self.viewport_size.width.0,
+                height: self.viewport_size.height.0,
+                scale: self.scale_factor,
+                font_scale: 1.0,
+            },
+        );
+
         self.refresh();
 
         self.bounds_observers
@@ -1952,6 +2124,8 @@ impl Window {
                 .set_input_handler(input_handler.unwrap());
         }
 
+        #[cfg(feature = "yoga")]
+        invoke_layout_engine_clear_hook(self.handle.window_id(), cx);
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
         self.next_frame.finish(&mut self.rendered_frame);
@@ -2435,6 +2609,26 @@ impl Window {
         self.with_absolute_element_offset(abs_offset, f)
     }
 
+    /// Allocate a fresh identifier for a scroll container.
+    pub fn allocate_scroll_container_id(&mut self) -> ScrollContainerId {
+        let id = ScrollContainerId::new(self.next_scroll_container_id);
+        self.next_scroll_container_id = self.next_scroll_container_id.wrapping_add(1);
+        id
+    }
+
+    /// Executes `f` while marking the active scroll container.
+    pub fn with_scroll_container<R>(
+        &mut self,
+        scroll_id: ScrollContainerId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_prepaint();
+        self.scroll_container_stack.push(scroll_id);
+        let result = f(self);
+        self.scroll_container_stack.pop();
+        result
+    }
+
     /// Updates the global element offset based on the given offset. This is used to implement
     /// drag handles and other manual painting of elements. This method should only be called during
     /// the prepaint phase of element drawing.
@@ -2465,6 +2659,23 @@ impl Window {
         self.element_opacity = previous_opacity * opacity;
         let result = f(self);
         self.element_opacity = previous_opacity;
+        result
+    }
+
+    pub(crate) fn with_transformation<R>(
+        &mut self,
+        transformation: Option<crate::TransformationMatrix>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.invalidator.debug_assert_paint_or_prepaint();
+
+        let Some(transformation) = transformation else {
+            return f(self);
+        };
+
+        self.transformation_stack.push(transformation);
+        let result = f(self);
+        self.transformation_stack.pop();
         result
     }
 
@@ -2565,6 +2776,11 @@ impl Window {
     pub(crate) fn element_opacity(&self) -> f32 {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.element_opacity
+    }
+
+    pub(crate) fn current_transformation(&self) -> Option<crate::TransformationMatrix> {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        self.transformation_stack.last().copied()
     }
 
     /// Obtain the current content mask. This method should only be called during element drawing.
@@ -2860,6 +3076,7 @@ impl Window {
         let scale_factor = self.scale_factor();
         let content_mask = self.content_mask();
         let opacity = self.element_opacity();
+        let transformation = self.current_transformation();
         self.next_frame.scene.insert_primitive(Quad {
             order: 0,
             bounds: quad.bounds.scale(scale_factor),
@@ -2869,6 +3086,7 @@ impl Window {
             corner_radii: quad.corner_radii.scale(scale_factor),
             border_widths: quad.border_widths.scale(scale_factor),
             border_style: quad.border_style,
+            transformation: transformation.unwrap_or_else(crate::TransformationMatrix::unit),
         });
     }
 
@@ -3270,6 +3488,7 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
+        let measure: LayoutMeasureFn = StackSafe::new(Box::new(measure));
         self.layout_engine
             .as_mut()
             .unwrap()
@@ -3302,14 +3521,60 @@ impl Window {
         self.invalidator.debug_assert_prepaint();
 
         let scale_factor = self.scale_factor();
-        let mut bounds = self
+        let local_bounds = self
             .layout_engine
             .as_mut()
             .unwrap()
             .layout_bounds(layout_id, scale_factor)
             .map(Into::into);
-        bounds.origin += self.element_offset();
-        bounds
+        let mut window_bounds = local_bounds;
+        window_bounds.origin += self.element_offset();
+        self.record_node_snapshot(layout_id, local_bounds, window_bounds);
+        window_bounds
+    }
+
+    /// Persist a node snapshot for the current frame.
+    pub fn record_node_snapshot(
+        &mut self,
+        layout_id: LayoutId,
+        local: Bounds<Pixels>,
+        window: Bounds<Pixels>,
+    ) {
+        self.invalidator.debug_assert_prepaint();
+        let snapshot = self.next_frame.node_geometry.record(
+            layout_id,
+            local,
+            window,
+            self.scroll_container_stack.as_slice(),
+        );
+        record_global_snapshot(self.handle.window_id(), layout_id, &snapshot);
+    }
+
+    /// Retrieve the last committed snapshot for a layout node.
+    pub fn node_snapshot(&self, layout_id: LayoutId) -> Option<NodeSnapshot> {
+        self.rendered_frame.node_geometry.snapshot(layout_id)
+    }
+
+    /// Drop any cached geometry for the provided layout node.
+    pub fn invalidate_layout_node(&mut self, layout_id: LayoutId) {
+        let window_id = self.handle.window_id();
+        self.rendered_frame
+            .node_geometry
+            .invalidate(window_id, layout_id);
+        self.next_frame
+            .node_geometry
+            .invalidate(window_id, layout_id);
+    }
+
+    /// Drop cached geometry for nodes affected by the given scroll container.
+    pub fn scroll_container_updated(&mut self, scroll_id: ScrollContainerId) {
+        let window_id = self.handle.window_id();
+        self.rendered_frame
+            .node_geometry
+            .scroll_container_updated(window_id, scroll_id);
+        self.next_frame
+            .node_geometry
+            .scroll_container_updated(window_id, scroll_id);
     }
 
     /// This method should be called during `prepaint`. You can use
@@ -3339,6 +3604,59 @@ impl Window {
     pub fn insert_window_control_hitbox(&mut self, area: WindowControlArea, hitbox: Hitbox) {
         self.invalidator.debug_assert_paint();
         self.next_frame.window_control_hitboxes.push((area, hitbox));
+    }
+
+    /// Register custom metadata for a hitbox. This metadata can be retrieved later
+    /// during hit testing using `get_hitbox_metadata`. The type must be `Send + Sync + 'static`.
+    ///
+    /// This is useful for embedders that need to associate domain-specific data with hitboxes,
+    /// such as React Native tags or other identifiers.
+    ///
+    /// This method should only be called as part of the prepaint or paint phase of element drawing.
+    pub fn set_hitbox_metadata<T: Any + Send + Sync>(&mut self, hitbox_id: HitboxId, data: T) {
+        self.invalidator.debug_assert_paint_or_prepaint();
+        self.next_frame
+            .hitbox_metadata
+            .insert(hitbox_id, Box::new(data));
+    }
+
+    /// Retrieve custom metadata for a hitbox from the rendered frame.
+    ///
+    /// Returns `None` if no metadata was registered for this hitbox ID or if the type doesn't match.
+    pub fn get_hitbox_metadata<T: Any>(&self, hitbox_id: HitboxId) -> Option<&T> {
+        self.rendered_frame
+            .hitbox_metadata
+            .get(&hitbox_id)?
+            .downcast_ref::<T>()
+    }
+
+    /// Perform hit testing at an arbitrary position using the rendered frame's hitboxes.
+    /// Returns a `HitTest` containing hitbox IDs at the position in paint order (front to back).
+    ///
+    /// This can be called at any time and queries the last completed frame. This is useful
+    /// for embedders that need synchronous hit testing outside of GPUI's event dispatch,
+    /// such as FFI calls from JavaScript.
+    pub fn hit_test_at(&self, position: Point<Pixels>) -> HitTest {
+        self.rendered_frame.hit_test(position)
+    }
+
+    /// Iterate all hitboxes from the rendered frame in paint order (front to back).
+    /// For each hitbox, calls the provided closure with the hitbox ID, bounds, and metadata (if any).
+    ///
+    /// This is useful for embedders that need to build caches or snapshots of the UI tree
+    /// for synchronous queries. The hitboxes are provided in the same order they were painted.
+    pub fn iter_hitboxes_with_metadata<F>(&self, mut f: F)
+    where
+        F: FnMut(HitboxId, Bounds<Pixels>, Option<&(dyn Any + Send + Sync)>),
+    {
+        for hitbox in &self.rendered_frame.hitboxes {
+            let metadata = self
+                .rendered_frame
+                .hitbox_metadata
+                .get(&hitbox.id)
+                .map(|boxed| boxed.as_ref() as &(dyn Any + Send + Sync));
+            f(hitbox.id, hitbox.bounds, metadata);
+        }
     }
 
     /// Sets the key context for the current element. This context will be used to translate

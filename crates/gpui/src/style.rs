@@ -25,6 +25,20 @@ pub struct DebugBelow;
 #[cfg(debug_assertions)]
 impl crate::Global for DebugBelow {}
 
+/// Pointer events behavior for interactive elements.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum PointerEvents {
+    /// Default behavior: this element and its children can receive pointer events.
+    #[default]
+    Auto,
+    /// Neither this element nor its children receive pointer events; events pass through.
+    None,
+    /// This element does not receive pointer events, but its children can.
+    BoxNone,
+    /// This element receives pointer events, but its children do not.
+    BoxOnly,
+}
+
 /// How to fit the image into the bounds of the element.
 pub enum ObjectFit {
     /// The image will be stretched to fill the bounds of the element.
@@ -257,8 +271,14 @@ pub struct Style {
     /// The mouse cursor style shown when the mouse pointer is over an element.
     pub mouse_cursor: Option<CursorStyle>,
 
+    /// How this element and/or its children should handle pointer events.
+    pub pointer_events: PointerEvents,
+
     /// The opacity of this element
     pub opacity: Option<f32>,
+
+    /// The transformation matrix to apply to this element
+    pub transform: Option<crate::TransformationMatrix>,
 
     /// The grid columns of this element
     /// Equivalent to the Tailwind `grid-cols-<number>`
@@ -626,94 +646,98 @@ impl Style {
 
         window.paint_shadows(bounds, corner_radii, &self.box_shadow);
 
-        let background_color = self.background.as_ref().and_then(Fill::color);
-        if background_color.is_some_and(|color| !color.is_transparent()) {
-            let mut border_color = match background_color {
-                Some(color) => match color.tag {
-                    BackgroundTag::Solid => color.solid,
-                    BackgroundTag::LinearGradient => color
-                        .colors
-                        .first()
-                        .map(|stop| stop.color)
-                        .unwrap_or_default(),
-                    BackgroundTag::PatternSlash => color.solid,
-                },
-                None => Hsla::default(),
-            };
-            border_color.a = 0.;
-            window.paint_quad(quad(
-                bounds,
-                corner_radii,
-                background_color.unwrap_or_default(),
-                Edges::default(),
-                border_color,
-                self.border_style,
-            ));
-        }
+        window.with_transformation(self.transform, |window| {
+            let background_color = self.background.as_ref().and_then(Fill::color);
+            if background_color.is_some_and(|color| !color.is_transparent()) {
+                let mut border_color = match background_color {
+                    Some(color) => match color.tag {
+                        BackgroundTag::Solid => color.solid,
+                        BackgroundTag::LinearGradient => color
+                            .colors
+                            .first()
+                            .map(|stop| stop.color)
+                            .unwrap_or_default(),
+                        BackgroundTag::PatternSlash => color.solid,
+                    },
+                    None => Hsla::default(),
+                };
+                border_color.a = 0.;
+                window.paint_quad(quad(
+                    bounds,
+                    corner_radii,
+                    background_color.unwrap_or_default(),
+                    Edges::default(),
+                    border_color,
+                    self.border_style,
+                ));
+            }
 
-        continuation(window, cx);
+            continuation(window, cx);
 
-        if self.is_border_visible() {
-            let border_widths = self.border_widths.to_pixels(rem_size);
-            let max_border_width = border_widths.max();
-            let max_corner_radius = corner_radii.max();
+            if self.is_border_visible() {
+                let border_widths = self.border_widths.to_pixels(rem_size);
+                let max_border_width = border_widths.max();
+                let max_corner_radius = corner_radii.max();
 
-            let top_bounds = Bounds::from_corners(
-                bounds.origin,
-                bounds.top_right() + point(Pixels::ZERO, max_border_width.max(max_corner_radius)),
-            );
-            let bottom_bounds = Bounds::from_corners(
-                bounds.bottom_left() - point(Pixels::ZERO, max_border_width.max(max_corner_radius)),
-                bounds.bottom_right(),
-            );
-            let left_bounds = Bounds::from_corners(
-                top_bounds.bottom_left(),
-                bottom_bounds.origin + point(max_border_width, Pixels::ZERO),
-            );
-            let right_bounds = Bounds::from_corners(
-                top_bounds.bottom_right() - point(max_border_width, Pixels::ZERO),
-                bottom_bounds.top_right(),
-            );
+                let top_bounds = Bounds::from_corners(
+                    bounds.origin,
+                    bounds.top_right()
+                        + point(Pixels::ZERO, max_border_width.max(max_corner_radius)),
+                );
+                let bottom_bounds = Bounds::from_corners(
+                    bounds.bottom_left()
+                        - point(Pixels::ZERO, max_border_width.max(max_corner_radius)),
+                    bounds.bottom_right(),
+                );
+                let left_bounds = Bounds::from_corners(
+                    top_bounds.bottom_left(),
+                    bottom_bounds.origin + point(max_border_width, Pixels::ZERO),
+                );
+                let right_bounds = Bounds::from_corners(
+                    top_bounds.bottom_right() - point(max_border_width, Pixels::ZERO),
+                    bottom_bounds.top_right(),
+                );
 
-            let mut background = self.border_color.unwrap_or_default();
-            background.a = 0.;
-            let quad = quad(
-                bounds,
-                corner_radii,
-                background,
-                border_widths,
-                self.border_color.unwrap_or_default(),
-                self.border_style,
-            );
+                let mut background = self.border_color.unwrap_or_default();
+                background.a = 0.;
+                let quad = quad(
+                    bounds,
+                    corner_radii,
+                    background,
+                    border_widths,
+                    self.border_color.unwrap_or_default(),
+                    self.border_style,
+                );
 
-            window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
-                window.paint_quad(quad.clone());
-            });
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: right_bounds,
-                }),
-                |window| {
+                window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
                     window.paint_quad(quad.clone());
-                },
-            );
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: bottom_bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad.clone());
-                },
-            );
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: left_bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad);
-                },
-            );
-        }
+                });
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: right_bounds,
+                    }),
+                    |window| {
+                        window.paint_quad(quad.clone());
+                    },
+                );
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: bottom_bounds,
+                    }),
+                    |window| {
+                        window.paint_quad(quad.clone());
+                    },
+                );
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: left_bounds,
+                    }),
+                    |window| {
+                        window.paint_quad(quad);
+                    },
+                );
+            }
+        });
 
         #[cfg(debug_assertions)]
         if self.debug_below {
@@ -768,7 +792,9 @@ impl Default for Style {
             box_shadow: Default::default(),
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
+            pointer_events: PointerEvents::Auto,
             opacity: None,
+            transform: None,
             grid_rows: None,
             grid_cols: None,
             grid_location: None,

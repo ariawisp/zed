@@ -27,6 +27,10 @@ fn main() {
         }
         _ => (),
     };
+
+    // Build Yoga bridge when yoga feature is enabled
+    #[cfg(feature = "yoga")]
+    build_yoga_bridge();
 }
 
 #[cfg(any(
@@ -494,4 +498,46 @@ mod windows {
             .write_all(rust_binding.as_bytes())
             .expect("Failed to write Rust binding file");
     }
+}
+
+#[cfg(feature = "yoga")]
+fn build_yoga_bridge() {
+    use std::path::PathBuf;
+    use walkdir::WalkDir;
+
+    // Tell cargo to rebuild if C++ files change
+    println!("cargo:rerun-if-changed=yoga_bridge/YogaBridge.h");
+    println!("cargo:rerun-if-changed=yoga_bridge/YogaBridge.cpp");
+
+    // Point to React Native's bundled Yoga headers (vendored in react-native-gpui)
+    // Assumes we're building from react-native-gpui project structure
+    let yoga_include = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("../../../react-native-gpui/native/third-party/react-native/packages/react-native/ReactCommon/yoga");
+
+    if !yoga_include.exists() {
+        panic!(
+            "Yoga headers not found at {:?}. Make sure you're building from react-native-gpui project.",
+            yoga_include
+        );
+    }
+
+    // Use cxx-build to compile the Yoga bridge
+    let mut builder = cxx_build::bridge("src/yoga/ffi.rs");
+    builder.file("yoga_bridge/YogaBridge.cpp");
+
+    // Compile Yoga sources directly into the bridge library so we have the core implementation.
+    let yoga_source_root = yoga_include.join("yoga");
+    for entry in WalkDir::new(&yoga_source_root) {
+        let entry = entry.expect("failed to walk Yoga sources");
+        if entry.file_type().is_file() && entry.path().extension().map_or(false, |ext| ext == "cpp")
+        {
+            builder.file(entry.path());
+        }
+    }
+
+    builder
+        .include(&yoga_include)
+        .std("c++20")
+        .flag_if_supported("-w")
+        .compile("gpui_yoga_bridge");
 }

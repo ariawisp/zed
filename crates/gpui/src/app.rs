@@ -1,10 +1,11 @@
 use std::{
     any::{TypeId, type_name},
-    cell::{BorrowMutError, Ref, RefCell, RefMut},
+    cell::{BorrowMutError, Cell, Ref, RefCell, RefMut},
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
+    ptr,
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
     time::{Duration, Instant},
@@ -37,11 +38,12 @@ use crate::{
     Action, ActionBuildError, ActionRegistry, Any, AnyView, AnyWindowHandle, AppContext, Asset,
     AssetSource, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle, DispatchPhase, DisplayId,
     EventEmitter, FocusHandle, FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext,
-    Keymap, Keystroke, LayoutId, Menu, MenuItem, OwnedMenu, PathPromptOptions, Pixels, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PromptBuilder,
-    PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
-    Reservation, ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer, Task,
-    TextSystem, Window, WindowAppearance, WindowHandle, WindowId, WindowInvalidator,
+    Keymap, Keystroke, LayoutId, Menu, MenuItem, NodeGeometryService, NodeGeometryServiceGlobal,
+    OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, Point, PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render,
+    RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString,
+    SubscriberSet, Subscription, SvgRenderer, Task, TextSystem, Window, WindowAppearance,
+    WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     current_platform, hash, init_app_menus,
 };
@@ -123,6 +125,46 @@ impl Drop for AppRefMut<'_> {
 /// A reference to a GPUI application, typically constructed in the `main` function of your app.
 /// You won't interact with this type much outside of initial configuration and startup.
 pub struct Application(Rc<AppCell>);
+
+thread_local! {
+    static CURRENT_APP: Cell<*mut App> = Cell::new(ptr::null_mut());
+}
+
+struct CurrentAppGuard {
+    prev: *mut App,
+}
+
+impl CurrentAppGuard {
+    fn enter(app: &mut App) -> Self {
+        let ptr = app as *mut App;
+        let prev = CURRENT_APP.with(|cell| {
+            let prev = cell.get();
+            cell.set(ptr);
+            prev
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for CurrentAppGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        CURRENT_APP.with(|cell| cell.set(prev));
+    }
+}
+
+/// Run `f` with the currently-updating app if one is active on this thread.
+pub fn with_current_app_mut<R>(f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    CURRENT_APP.with(|cell| {
+        let ptr = cell.get();
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: `CURRENT_APP` only points to a live `App` during `App::update`.
+            Some(unsafe { f(&mut *ptr) })
+        }
+    })
+}
 
 /// Represents an application before it is fully launched. Once your app is
 /// configured, you'll start the app with `App::run`.
@@ -576,6 +618,8 @@ pub struct App {
     pub(crate) restart_observers: SubscriberSet<(), Handler>,
     pub(crate) restart_path: Option<PathBuf>,
     pub(crate) window_closed_observers: SubscriberSet<(), WindowClosedHandler>,
+    pub(crate) window_ready_observers: SubscriberSet<WindowId, Handler>,
+    pub(crate) ready_windows: FxHashSet<WindowId>,
     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
@@ -652,6 +696,8 @@ impl App {
                 restart_observers: SubscriberSet::new(),
                 restart_path: None,
                 window_closed_observers: SubscriberSet::new(),
+                window_ready_observers: SubscriberSet::new(),
+                ready_windows: FxHashSet::default(),
                 layout_id_buffer: Default::default(),
                 propagate_event: true,
                 prompt_builder: Some(PromptBuilder::Default),
@@ -668,6 +714,11 @@ impl App {
 
         init_app_menus(platform.as_ref(), &app.borrow());
         SystemWindowTabController::init(&mut app.borrow_mut());
+        // Initialize environment global state (locale, window metrics cache)
+        {
+            let cx = &mut *app.borrow_mut();
+            crate::environment::init(cx);
+        }
 
         platform.on_keyboard_layout_change(Box::new({
             let app = Rc::downgrade(&app);
@@ -729,6 +780,11 @@ impl App {
         &self.keyboard_mapper
     }
 
+    /// Access the global node geometry service.
+    pub fn node_geometry_service(&self) -> &dyn NodeGeometryService {
+        self.global::<NodeGeometryServiceGlobal>().service()
+    }
+
     /// Invokes a handler when the current keyboard layout changes
     pub fn on_keyboard_layout_change<F>(&self, mut callback: F) -> Subscription
     where
@@ -758,6 +814,7 @@ impl App {
 
     pub(crate) fn update<R>(&mut self, update: impl FnOnce(&mut Self) -> R) -> R {
         self.start_update();
+        let _guard = CurrentAppGuard::enter(self);
         let result = update(self);
         self.finish_update();
         result
@@ -923,6 +980,13 @@ impl App {
             .collect()
     }
 
+    /// Returns true if a window update is currently executing on the stack.
+    /// Useful for callers that might otherwise reenter `update_window_id` and
+    /// trigger nested `AnyWindowHandle::update` errors.
+    pub fn is_window_update_in_progress(&self) -> bool {
+        !self.window_update_stack.is_empty()
+    }
+
     /// Returns the window handles ordered by their appearance on screen, front to back.
     ///
     /// The first window in the returned list is the active/topmost window of the application.
@@ -965,6 +1029,7 @@ impl App {
 
                     cx.window_handles.insert(id, window.handle);
                     cx.windows.get_mut(id).unwrap().replace(Box::new(window));
+                    cx.trigger_window_ready(id);
                     Ok(handle)
                 }
                 Err(e) => {
@@ -1338,6 +1403,15 @@ impl App {
         callback(self);
     }
 
+    fn trigger_window_ready(&mut self, window_id: WindowId) {
+        if !self.ready_windows.insert(window_id) {
+            return;
+        }
+        for mut callback in self.window_ready_observers.remove(&window_id) {
+            let _ = callback(self);
+        }
+    }
+
     fn apply_entity_created_effect(
         &mut self,
         entity: AnyEntity,
@@ -1373,6 +1447,8 @@ impl App {
 
             if window.removed {
                 cx.window_handles.remove(&id);
+                cx.ready_windows.remove(&id);
+                for _ in cx.window_ready_observers.remove(&id) {}
                 cx.windows.remove(id);
 
                 cx.window_closed_observers.clone().retain(&(), |callback| {
@@ -1807,6 +1883,35 @@ impl App {
         let (subscription, activate) = self.window_closed_observers.insert((), Box::new(on_closed));
         activate();
         subscription
+    }
+
+    /// Registers a callback that is invoked once the specified window has been fully initialized.
+    /// If the window is already ready, the callback runs immediately.
+    pub fn on_window_ready(
+        &mut self,
+        handle: AnyWindowHandle,
+        mut callback: impl FnMut(&mut App) + 'static,
+    ) -> Subscription {
+        if self.ready_windows.contains(&handle.window_id()) {
+            callback(self);
+            return Subscription::new(|| {});
+        }
+
+        let window_id = handle.window_id();
+        let (subscription, activate) = self.window_ready_observers.insert(
+            window_id,
+            Box::new(move |app: &mut App| {
+                callback(app);
+                false
+            }),
+        );
+        activate();
+        subscription
+    }
+
+    /// Returns true if the window identified by `handle` has finished initialization.
+    pub fn is_window_ready(&self, handle: AnyWindowHandle) -> bool {
+        self.ready_windows.contains(&handle.window_id())
     }
 
     pub(crate) fn clear_pending_keystrokes(&mut self) {

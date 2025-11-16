@@ -38,10 +38,10 @@ pub(crate) mod scap_screen_capture;
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
     DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Font, FontId, FontMetrics, FontRun,
-    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels, PlatformInput,
-    Point, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
-    ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, TaskLabel, Window,
-    WindowControlArea, hash, point, px, size,
+    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LayoutEngineKind, LineLayout,
+    Pixels, PlatformInput, Point, RenderGlyphParams, RenderImage, RenderImageParams,
+    RenderSvgParams, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer,
+    SystemWindowTab, Task, TaskLabel, Window, WindowControlArea, hash, point, px, size,
 };
 use anyhow::Result;
 use async_task::Runnable;
@@ -1180,6 +1180,9 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// The layout engine used to compute element geometry for this window.
+    pub layout_engine: LayoutEngineKind,
 }
 
 /// The variables that can be configured when creating a new window
@@ -1287,6 +1290,7 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            layout_engine: LayoutEngineKind::default(),
         }
     }
 }

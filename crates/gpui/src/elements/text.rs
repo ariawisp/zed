@@ -5,7 +5,6 @@ use crate::{
     TextRun, TextStyle, TooltipId, WhiteSpace, Window, WrappedLine, WrappedLineLayout,
     register_tooltip_mouse_handlers, set_tooltip_on_window,
 };
-use anyhow::Context as _;
 use smallvec::SmallVec;
 use std::{
     borrow::Cow,
@@ -15,6 +14,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use log::warn;
 use util::ResultExt;
 
 impl Element for &'static str {
@@ -435,28 +435,37 @@ impl TextLayout {
 
     fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
         let mut element_state = self.0.borrow_mut();
-        let element_state = element_state
-            .as_mut()
-            .with_context(|| format!("measurement has not been performed on {text}"))
-            .unwrap();
-        element_state.bounds = Some(bounds);
+        if let Some(state) = element_state.as_mut() {
+            state.bounds = Some(bounds);
+        } else {
+            warn!(
+                target: "elements::text",
+                "Text prepaint called before measurement for {text:?}"
+            );
+        }
     }
 
     fn paint(&self, text: &str, window: &mut Window, cx: &mut App) {
         let element_state = self.0.borrow();
-        let element_state = element_state
-            .as_ref()
-            .with_context(|| format!("measurement has not been performed on {text}"))
-            .unwrap();
-        let bounds = element_state
-            .bounds
-            .with_context(|| format!("prepaint has not been performed on {text}"))
-            .unwrap();
+        let Some(state) = element_state.as_ref() else {
+            warn!(
+                target: "elements::text",
+                "Text paint called before measurement for {text:?}"
+            );
+            return;
+        };
+        let Some(bounds) = state.bounds else {
+            warn!(
+                target: "elements::text",
+                "Text paint called before prepaint for {text:?}"
+            );
+            return;
+        };
 
-        let line_height = element_state.line_height;
+        let line_height = state.line_height;
         let mut line_origin = bounds.origin;
         let text_style = window.text_style();
-        for line in &element_state.lines {
+        for line in &state.lines {
             line.paint_background(
                 line_origin,
                 line_height,

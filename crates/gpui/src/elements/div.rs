@@ -21,9 +21,9 @@ use crate::{
     Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext,
     KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Overflow,
-    ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
-    size,
+    ParentElement, Pixels, Point, Render, ScrollContainerId, ScrollWheelEvent, SharedString, Size,
+    Style, StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point,
+    px, size,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -1409,6 +1409,7 @@ impl Element for Div {
             scroll_handle.scroll_to_active_item();
         }
 
+        let scroll_container_id = self.interactivity.scroll_container_id;
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -1422,11 +1423,19 @@ impl Element for Div {
                     return hitbox;
                 }
 
-                window.with_element_offset(scroll_offset, |window| {
-                    for child in &mut self.children {
-                        child.prepaint(window, cx);
-                    }
-                });
+                let mut prepaint_children = |window: &mut Window| {
+                    window.with_element_offset(scroll_offset, |window| {
+                        for child in &mut self.children {
+                            child.prepaint(window, cx);
+                        }
+                    });
+                };
+
+                if let Some(scroll_id) = scroll_container_id {
+                    window.with_scroll_container(scroll_id, |window| prepaint_children(window));
+                } else {
+                    prepaint_children(window);
+                }
 
                 if let Some(listener) = self.prepaint_listener.as_ref() {
                     listener(children_bounds, window, cx);
@@ -1476,6 +1485,51 @@ impl Element for Div {
     }
 }
 
+/// Global pointer-events suppression context used during traversal for hitbox insertion.
+#[derive(Default)]
+struct PointerEventsContext {
+    suppress_children_depth: usize,
+    suppress_self_depth: usize,
+}
+
+impl Global for PointerEventsContext {}
+
+impl PointerEventsContext {
+    fn push(&mut self, pe: crate::PointerEvents) {
+        match pe {
+            crate::PointerEvents::Auto | crate::PointerEvents::BoxNone => {}
+            crate::PointerEvents::BoxOnly => {
+                self.suppress_children_depth += 1;
+            }
+            crate::PointerEvents::None => {
+                self.suppress_children_depth += 1;
+                self.suppress_self_depth += 1;
+            }
+        }
+    }
+
+    fn pop(&mut self, pe: crate::PointerEvents) {
+        match pe {
+            crate::PointerEvents::Auto | crate::PointerEvents::BoxNone => {}
+            crate::PointerEvents::BoxOnly => {
+                self.suppress_children_depth = self.suppress_children_depth.saturating_sub(1);
+            }
+            crate::PointerEvents::None => {
+                self.suppress_children_depth = self.suppress_children_depth.saturating_sub(1);
+                self.suppress_self_depth = self.suppress_self_depth.saturating_sub(1);
+            }
+        }
+    }
+
+    fn suppress_self(&self) -> bool {
+        self.suppress_self_depth > 0
+    }
+
+    fn suppress_children(&self) -> bool {
+        self.suppress_children_depth > 0
+    }
+}
+
 impl IntoElement for Div {
     type Element = Self;
 
@@ -1503,6 +1557,7 @@ pub struct Interactivity {
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_container_id: Option<ScrollContainerId>,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied
     /// by focus, active, etc.
@@ -1625,6 +1680,28 @@ impl Interactivity {
                     );
                 }
 
+                if self.scroll_offset.is_some() {
+                    let scroll_id = if let Some(scroll_handle) = self.tracked_scroll_handle.as_ref()
+                    {
+                        scroll_handle.ensure_scroll_container_id(window)
+                    } else if let Some(state) = element_state.as_mut() {
+                        let id = state
+                            .scroll_container_id
+                            .unwrap_or_else(|| window.allocate_scroll_container_id());
+                        state.scroll_container_id = Some(id);
+                        id
+                    } else {
+                        self.scroll_container_id
+                            .unwrap_or_else(|| window.allocate_scroll_container_id())
+                    };
+                    if let Some(state) = element_state.as_mut() {
+                        state.scroll_container_id = Some(scroll_id);
+                    }
+                    self.scroll_container_id = Some(scroll_id);
+                } else {
+                    self.scroll_container_id = None;
+                }
+
                 let style = self.compute_style_internal(None, element_state.as_mut(), window, cx);
                 let layout_id = f(style, window, cx);
                 (layout_id, element_state)
@@ -1694,7 +1771,17 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
+                            // Enter pointer-events context for children based on this element's style.
+                            cx.default_global::<PointerEventsContext>();
+                            {
+                                let ctx = cx.global_mut::<PointerEventsContext>();
+                                ctx.push(style.pointer_events);
+                            }
                             let result = f(&style, scroll_offset, hitbox, window, cx);
+                            {
+                                let ctx = cx.global_mut::<PointerEventsContext>();
+                                ctx.pop(style.pointer_events);
+                            }
                             (result, element_state)
                         },
                     )
@@ -1703,7 +1790,20 @@ impl Interactivity {
         )
     }
 
-    fn should_insert_hitbox(&self, style: &Style, window: &Window, cx: &App) -> bool {
+    fn should_insert_hitbox(&self, style: &Style, window: &Window, cx: &mut App) -> bool {
+        // Respect pointer-events on this element
+        match style.pointer_events {
+            crate::PointerEvents::BoxNone | crate::PointerEvents::None => return false,
+            _ => {}
+        }
+
+        // Suppress via ancestor context
+        if let Some(ctx) = cx.try_global::<PointerEventsContext>() {
+            if ctx.suppress_children() || ctx.suppress_self() {
+                return false;
+            }
+        }
+
         self.hitbox_behavior != HitboxBehavior::Normal
             || self.window_control.is_some()
             || style.mouse_cursor.is_some()
@@ -2591,6 +2691,7 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_container_id: Option<ScrollContainerId>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
 }
 
@@ -3066,6 +3167,7 @@ struct ScrollHandleState {
     scroll_to_bottom: bool,
     overflow: Point<Overflow>,
     active_item: Option<ScrollActiveItem>,
+    scroll_container_id: Option<ScrollContainerId>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -3097,6 +3199,18 @@ impl ScrollHandle {
     /// Construct a new scroll handle.
     pub fn new() -> Self {
         Self(Rc::default())
+    }
+
+    pub(crate) fn ensure_scroll_container_id(&self, window: &mut Window) -> ScrollContainerId {
+        let mut state = self.0.borrow_mut();
+        *state
+            .scroll_container_id
+            .get_or_insert_with(|| window.allocate_scroll_container_id())
+    }
+
+    /// Access the scroll container identifier if one has been allocated.
+    pub fn scroll_container_id(&self) -> Option<ScrollContainerId> {
+        self.0.borrow().scroll_container_id
     }
 
     /// Get the current scroll offset.
@@ -3231,6 +3345,11 @@ impl ScrollHandle {
     pub fn set_offset(&self, mut position: Point<Pixels>) {
         let state = self.0.borrow();
         *state.offset.borrow_mut() = position;
+    }
+
+    /// Override the maximum scroll offset (used to clamp scroll bounds).
+    pub fn set_max_offset(&self, max: Size<Pixels>) {
+        self.0.borrow_mut().max_offset = max;
     }
 
     /// Get the logical scroll top, based on a child index and a pixel offset.
